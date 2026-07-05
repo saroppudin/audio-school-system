@@ -1,0 +1,29 @@
+# ====================================================================
+# KONFIGURASI AUDIO AUTOMATION SEKOLAH
+# Copy ke /home/lenovo/sekolah.conf setelah instalasi
+# ====================================================================
+
+# --- IDENTITAS SEKOLAH ---
+NAMA_SEKOLAH="SMK Negeri Purworejo"
+
+# --- KOORDINAT GEOGRAFIS (untuk Aladhan Prayer Times API) ---
+# Ambil dari Google Maps atau https://nominatim.openstreetmap.org/
+GARIS_LINTANG="-7.7134"      # Latitude (format: -XX.XXXX)
+GARIS_BUJUR="109.9961"       # Longitude (format: XXX.XXXX)
+
+# --- BLUETOOTH SPEAKER ---
+# Dapatkan dari: bluetoothctl devices
+# Format: XX:XX:XX:XX:XX:XX
+MAC_SPEAKER="7d:5b:22:c8:4d:ab"
+
+# --- SYSTEM CONFIGURATION (jangan ubah) ---
+USER_SISTEM="lenovo"
+DIR_BASE="/home/lenovo"
+DIR_AUDIO="/home/lenovo/audio"
+DIR_FLAG="/home/lenovo/jadwal_nonaktif"
+DIR_CACHE="/home/lenovo/.cache"
+LOG_FILE="/var/log/otomasi_audio.log"
+DB_LOKAL="/home/lenovo/jadwal_sholat.json"
+CONF_UJIAN="/home/lenovo/jadwal_ujian.conf"
+ALADHAN_API="https://api.aladhan.com/v1/timings"
+TIMEZONE="Asia/Jakarta"
