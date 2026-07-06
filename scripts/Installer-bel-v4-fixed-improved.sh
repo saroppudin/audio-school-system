@@ -1,26 +1,64 @@
 #!/bin/bash
 # ====================================================================
-# MASTER INSTALLER AUTOMATION AUDIO SEKOLAH (VERSION 4 - PERBAIKAN)
+# MASTER INSTALLER AUTOMATION AUDIO SEKOLAH (VERSION 5 - PERBAIKAN BLUETOOTH)
 # SYSTEM: MULTI-AUDIO BEL UJIAN, BEL HARIAN & DAEMON TAHRIM
 # ----------------------------------------------------------------
-# CATATAN PERBAIKAN DARI VERSION 3:
-#   1. Skrip sebelumnya TERPOTONG di baris terakhir (tahap 8/8 hilang)
-#      -> sudah dilengkapi dengan ringkasan & verifikasi akhir.
-#   2. Setiap skrip anak sebelumnya hardcode "source /home/lenovo/..."
-#      lalu ditambal pakai sed -> sekarang tiap skrip menemukan lokasi
-#      sekolah.conf sendiri secara dinamis (lebih aman & tidak rapuh).
-#   3. Cron pengecek disk sebelumnya memakai strftime() yang HANYA ada
-#      di gawk (Debian default-nya mawk, tidak mendukung strftime) DAN
-#      menaruh tanda persen (%) mentah di baris crontab, padahal cron
-#      memperlakukan % sebagai baris baru -> sekarang dipisah jadi
-#      skrip cek_disk.sh tersendiri, aman dari kedua masalah itu.
-#   4. Baris sudoers sebelumnya ditambahkan langsung ke /etc/sudoers
-#      (berisiko jika ada kesalahan sintaks) -> sekarang ditulis ke
-#      /etc/sudoers.d/ terpisah dan divalidasi dengan visudo -c.
-#   5. Ditambahkan validasi konfigurasi (USER_SISTEM, koordinat, MAC)
-#      di awal supaya kesalahan ketik ketahuan sebelum instalasi jalan.
-#   6. Ditambahkan pengecekan hasil setiap tahap penting (apt, dsb)
-#      supaya tidak diam-diam gagal di tengah jalan.
+# CATATAN PERBAIKAN DARI VERSION 4:
+#   1. [PENYEBAB UTAMA "BLUETOOTH TIDAK BISA KONEK"]
+#      V4 tidak pernah melakukan PAIRING ke speaker, hanya "connect".
+#      Kalau speaker belum pernah dipasangkan, connect akan SELALU
+#      gagal. -> Sekarang ada proses pairing+trust otomatis saat
+#      instalasi, plus skrip pasang_bt.sh untuk pairing ulang manual.
+#   2. [PENYEBAB "SUDAH CONNECTED TAPI TETAP TIDAK BERBUNYI"]
+#      PCM ALSA default "bluealsa" (dari paket bluez-alsa-utils) punya
+#      DEV default 00:00:00:00:00:00 (placeholder), BUKAN MAC speaker
+#      Anda. Artinya aplay/mpv -D bluealsa tidak pernah menunjuk ke
+#      speaker yang benar. -> Sekarang dibuatkan /etc/asound.conf yang
+#      mengunci PCM "bluealsa" ke MAC_SPEAKER secara eksplisit.
+#   3. Adapter Bluetooth sekarang dipaksa AutoEnable=true di
+#      /etc/bluetooth/main.conf supaya otomatis nyala tiap boot,
+#      tidak bergantung hanya pada 'bluetoothctl power on' saat
+#      instalasi.
+#   4. Servis systemd (anti-putus, tahrim-daemon) sekarang punya
+#      After=/Wants= ke bluealsa.service supaya tidak race condition
+#      saat baru boot.
+#   5. Ditambahkan aturan Polkit + D-Bus supaya user non-root yang
+#      menjalankan bluetoothctl lewat systemd/cron (tanpa sesi login
+#      konsol) tidak ditolak diam-diam oleh Polkit.
+#   6. sambung_bt.sh sekarang trust dulu sebelum connect, dan
+#      mencatat OUTPUT asli dari bluetoothctl ke log supaya kalau
+#      gagal lagi, penyebabnya kelihatan (bukan cuma "gagal").
+#   7. putar_audio.sh sekarang benar-benar mengecek status koneksi
+#      sebelum main dan mencatat CRITICAL yang jelas kalau tetap putus.
+#   8. Verifikasi akhir sekarang juga mengecek apakah MAC_SPEAKER
+#      sudah ada di daftar paired-devices.
+#
+# TAMBAHAN VERSION 6:
+#   9. Error handling diperluas: perintah-perintah sistem penting
+#      (systemctl, crontab, dbus) sekarang dibungkus fungsi jalankan()
+#      yang mencatat sukses/gagal dengan jelas, bukan diam-diam lanjut.
+#  10. FALLBACK AUDIO LOKAL: kalau speaker Bluetooth gagal konek saat
+#      jadwal bel tiba, bel tetap dibunyikan lewat output audio lokal
+#      (jack/HDMI PC) supaya sekolah tidak "bisu total" saat Bluetooth
+#      bermasalah.
+#  11. MONITORING KEGAGALAN SERVICE: anti-putus.service & tahrim-
+#      daemon.service sekarang punya OnFailure= yang mencatat ke log
+#      kalau service benar-benar gagal (bukan cuma reconnect biasa),
+#      plus watchdog cron cek_service.sh setiap 5 menit sebagai
+#      jaring pengaman kedua kalau systemd sendiri tidak mendeteksinya.
+#
+# TAMBAHAN VERSION 7 (sesuai permintaan):
+#  12. FALLBACK AUDIO LOKAL DIHAPUS. Output audio HANYA lewat
+#      Bluetooth speaker -- itu memang satu-satunya output utama.
+#  13. PEMAKAIAN RFKILL DIMINIMALKAN. rfkill sekarang HANYA dipakai
+#      sekali saat instalasi awal dan lewat pasang_bt.sh (manual, atas
+#      permintaan admin). Loop recovery otomatis di sambung_bt.sh
+#      TIDAK lagi mem-block/unblock rfkill berulang -- karena dengan
+#      AutoEnable=true (adapter auto-nyala tiap boot) dan
+#      anti-putus.service (menjaga koneksi tetap hidup nonstop),
+#      adapter seharusnya tidak pernah dalam kondisi ter-blok saat
+#      runtime. Kalau tetap gagal 3x beruntun, recovery sekarang cukup
+#      restart service bluetooth & bluealsa saja.
 # ====================================================================
 
 set -o pipefail
@@ -29,7 +67,7 @@ set -o pipefail
 # 1. KONFIGURASI SEKOLAH (SESUAIKAN DI SINI SEBELUM MENJALANKAN)
 # --------------------------------------------------------------------
 USER_SISTEM="lenovo"                   # Nama user non-root di Debian
-NAMA_SEKOLAH="SMK Negeri Purworejo"     # Nama Sekolah Anda
+NAMA_SEKOLAH="SMK Nurussalaf Kemiri"   # Nama Sekolah Anda
 GARIS_LINTANG="-7.7134"                # Koordinat Lintang Sekolah
 GARIS_BUJUR="109.9961"                 # Koordinat Bujur Sekolah
 MAC_SPEAKER="7d:5b:22:c8:4d:ab"        # MAC Address Mixer/Speaker Bluetooth
@@ -41,7 +79,7 @@ DIR_FLAG="${DIR_BASE}/jadwal_nonaktif"
 LOG_FILE="/var/log/otomasi_audio.log"
 
 # --------------------------------------------------------------------
-# 0. VALIDASI AWAL (BARU) - mencegah instalasi jalan dengan konfigurasi
+# 0. VALIDASI AWAL - mencegah instalasi jalan dengan konfigurasi
 #    yang salah ketik / tidak masuk akal
 # --------------------------------------------------------------------
 if [ "$EUID" -ne 0 ]; then
@@ -65,18 +103,40 @@ if ! [[ "$MAC_SPEAKER" =~ ^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$ ]]; then
     echo "[ERROR] Format MAC_SPEAKER tidak valid. Contoh format yang benar: 7d:5b:22:c8:4d:ab"
     exit 1
 fi
+MAC_SPEAKER_LOWER=$(echo "$MAC_SPEAKER" | tr 'A-F' 'a-f')
+
+# PERBAIKAN (BARU V6): pembungkus perintah-perintah penting supaya
+# kegagalan tidak diam-diam terlewat. Perintah non-fatal (systemctl,
+# crontab, dbus, dll) tetap lanjut instalasi tapi dicatat jelas kalau
+# gagal, sehingga admin bisa langsung tahu apa yang perlu dicek ulang.
+jalankan() {
+    local deskripsi="$1"; shift
+    if "$@" >/tmp/jalankan_output.$$ 2>&1; then
+        echo "  [OK] ${deskripsi}"
+        rm -f /tmp/jalankan_output.$$
+        return 0
+    else
+        local kode=$?
+        echo "  [PERINGATAN] ${deskripsi} - GAGAL (exit code ${kode})"
+        sed 's/^/      > /' /tmp/jalankan_output.$$
+        mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - [INSTALL-WARNING] - ${deskripsi} gagal (exit ${kode})." >> "$LOG_FILE" 2>/dev/null
+        rm -f /tmp/jalankan_output.$$
+        return "$kode"
+    fi
+}
 
 echo "===================================================="
-echo " Memulai Instalasi Otomatisasi Audio V4 untuk:"
+echo " Memulai Instalasi Otomatisasi Audio V7 untuk:"
 echo " ${NAMA_SEKOLAH}"
 echo "===================================================="
 
 # --------------------------------------------------------------------
 # 2. INSTALASI PAKET DEPENDENSI SISTEM
 # --------------------------------------------------------------------
-echo "[1/8] Menginstal paket pendukung Debian..."
+echo "[1/9] Menginstal paket pendukung Debian..."
 apt update && apt upgrade -y
-if ! apt install bluez bluez-tools bluez-alsa-utils alsa-utils mpv curl jq rfkill nano fail2ban systemd-timesyncd -y; then
+if ! apt install bluez bluez-tools bluez-alsa-utils alsa-utils mpv curl jq rfkill nano fail2ban systemd-timesyncd policykit-1 -y; then
     echo "[ERROR] Gagal menginstal paket dependensi. Periksa koneksi internet / repository apt Anda."
     exit 1
 fi
@@ -88,6 +148,10 @@ systemctl enable --now fail2ban
 
 # Matikan PipeWire jika ada (agar tidak berebut bluetooth adapter)
 systemctl disable --now pipewire pipewire-pulse wireplumber 2>/dev/null
+# Kalau ada sesi user aktif dengan pipewire versi --user, matikan juga
+loginctl list-users --no-legend 2>/dev/null | awk '{print $1}' | while read -r uid; do
+    runuser -l "$(id -nu "$uid" 2>/dev/null)" -c 'systemctl --user disable --now pipewire pipewire-pulse wireplumber' 2>/dev/null
+done
 
 # Mencegah PC masuk ke mode tidur/suspend
 systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target
@@ -95,25 +159,115 @@ systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target
 # Masukkan user ke grup audio dan bluetooth
 usermod -aG audio,bluetooth "${USER_SISTEM}"
 
+# PERBAIKAN (BARU): pastikan adapter otomatis nyala tiap kali boot,
+# tidak bergantung pada 'power on' manual saat instalasi saja.
+echo "[2/9] Mengonfigurasi adapter Bluetooth agar auto-enable saat boot..."
+if [ -f /etc/bluetooth/main.conf ]; then
+    cp /etc/bluetooth/main.conf /etc/bluetooth/main.conf.bak.$(date +%s)
+    if grep -q "^AutoEnable" /etc/bluetooth/main.conf; then
+        sed -i 's/^AutoEnable.*/AutoEnable=true/' /etc/bluetooth/main.conf
+    elif grep -q "^\[Policy\]" /etc/bluetooth/main.conf; then
+        sed -i '/^\[Policy\]/a AutoEnable=true' /etc/bluetooth/main.conf
+    else
+        printf "\n[Policy]\nAutoEnable=true\n" >> /etc/bluetooth/main.conf
+    fi
+fi
+
+# PERBAIKAN (BARU): aturan Polkit supaya user non-root yang menjalankan
+# bluetoothctl lewat systemd/cron (tanpa sesi login konsol interaktif)
+# tidak ditolak diam-diam saat power on / connect / trust dsb.
+mkdir -p /etc/polkit-1/rules.d
+cat <<'EOF' > /etc/polkit-1/rules.d/50-otomasi-audio-bluetooth.rules
+polkit.addRule(function(action, subject) {
+    if (action.id.indexOf("org.bluez") == 0 && subject.isInGroup("bluetooth")) {
+        return polkit.Result.YES;
+    }
+});
+EOF
+jalankan "Restart polkit" systemctl restart polkit
+
+# PERBAIKAN (BARU): aturan D-Bus tambahan sebagai jaring pengaman kedua,
+# untuk distro/versi bluez yang policy default-nya lebih ketat.
+cat <<EOF > /etc/dbus-1/system.d/60-otomasi-audio-bluetooth.conf
+<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-BUS Bus Configuration 1.0//EN" "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+  <policy group="bluetooth">
+    <allow send_destination="org.bluez"/>
+    <allow send_interface="org.bluez.Agent1"/>
+    <allow send_interface="org.freedesktop.DBus.ObjectManager"/>
+    <allow send_interface="org.freedesktop.DBus.Properties"/>
+  </policy>
+</busconfig>
+EOF
+jalankan "Reload dbus" systemctl reload dbus.service
+
 # Konfigurasi BlueALSA ke mode A2DP sink saja
-echo "[2/8] Mengonfigurasi BlueALSA..."
+echo "[3/9] Mengonfigurasi BlueALSA..."
 mkdir -p /etc/systemd/system/bluealsa.service.d
 cat <<EOF > /etc/systemd/system/bluealsa.service.d/override.conf
 [Service]
 ExecStart=
 ExecStart=/usr/bin/bluealsa -p a2dp-sink
 EOF
-systemctl daemon-reload
-systemctl restart bluetooth bluealsa
-rfkill unblock bluetooth
-bluetoothctl power on
+jalankan "Reload daemon systemd" systemctl daemon-reload
+jalankan "Restart service bluetooth" systemctl restart bluetooth
+sleep 2
+jalankan "Unblock rfkill bluetooth" rfkill unblock bluetooth
+jalankan "Power on adapter bluetooth" bluetoothctl power on
+sleep 1
+jalankan "Restart service bluealsa" systemctl restart bluealsa
+sleep 2
+
+# PERBAIKAN (BARU): kunci PCM ALSA "bluealsa" ke MAC speaker yang benar.
+# Tanpa ini, DEV memakai placeholder 00:00:00:00:00:00 dan audio TIDAK
+# akan pernah keluar ke speaker walau Bluetooth berhasil connect.
+echo "[4/9] Mengunci PCM ALSA 'bluealsa' ke speaker (${MAC_SPEAKER})..."
+[ -f /etc/asound.conf ] && cp /etc/asound.conf /etc/asound.conf.bak.$(date +%s)
+cat <<EOF > /etc/asound.conf
+pcm.bluealsa {
+    type bluealsa
+    device "${MAC_SPEAKER}"
+    profile "a2dp"
+}
+ctl.bluealsa {
+    type bluealsa
+}
+EOF
+
+# PERBAIKAN (BARU): PAIRING otomatis ke speaker. Ini yang HILANG di V4
+# dan menjadi penyebab utama "bluetooth tidak bisa konek" -- V4 langsung
+# mencoba 'connect' tanpa pernah 'pair'/'trust' dulu.
+echo "[5/9] Mencoba memasangkan (pairing) ke speaker ${MAC_SPEAKER}..."
+echo "      >>> PASTIKAN SPEAKER SEDANG DALAM MODE PAIRING SEKARANG <<<"
+bluetoothctl agent NoInputNoOutput >/dev/null 2>&1
+bluetoothctl default-agent >/dev/null 2>&1
+timeout 10 bluetoothctl scan on >/dev/null 2>&1
+sleep 8
+bluetoothctl scan off >/dev/null 2>&1
+
+if bluetoothctl pair "$MAC_SPEAKER" 2>&1 | tee -a "$LOG_FILE" | grep -qi "Pairing successful\|already paired\|AlreadyExists"; then
+    echo "  [OK] Pairing berhasil (atau sudah pernah dipasangkan sebelumnya)."
+else
+    echo "  [PERINGATAN] Pairing otomatis tidak berhasil dipastikan."
+    echo "  Kemungkinan speaker belum dalam mode pairing / di luar jangkauan."
+    echo "  Setelah instalasi selesai, jalankan manual: ${DIR_BASE}/pasang_bt.sh"
+fi
+bluetoothctl trust "$MAC_SPEAKER" >/dev/null 2>&1
+bluetoothctl connect "$MAC_SPEAKER" 2>&1 | tee -a "$LOG_FILE"
 
 # PERBAIKAN: sudoers ditulis ke file terpisah di /etc/sudoers.d/ dan
 # divalidasi dengan visudo -c, jauh lebih aman daripada menambahkan
 # baris langsung ke /etc/sudoers utama.
 SUDOERS_FILE="/etc/sudoers.d/otomasi-audio-rfkill"
 if [ ! -f "$SUDOERS_FILE" ]; then
-    echo "${USER_SISTEM} ALL=(ALL) NOPASSWD: /usr/sbin/rfkill" > "$SUDOERS_FILE"
+    cat <<EOF > "$SUDOERS_FILE"
+${USER_SISTEM} ALL=(ALL) NOPASSWD: /usr/sbin/rfkill
+${USER_SISTEM} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart anti-putus.service
+${USER_SISTEM} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart tahrim-daemon.service
+${USER_SISTEM} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart bluetooth
+${USER_SISTEM} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart bluealsa
+${USER_SISTEM} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart bluetooth bluealsa
+EOF
     chmod 440 "$SUDOERS_FILE"
     if ! visudo -c -f "$SUDOERS_FILE" &>/dev/null; then
         echo "[ERROR] Sintaks sudoers tidak valid, file dihapus demi keamanan."
@@ -125,7 +279,7 @@ fi
 # --------------------------------------------------------------------
 # 3. MEMBUAT STRUKTUR DIREKTORI & FILE KONFIGURASI SENTRAL
 # --------------------------------------------------------------------
-echo "[3/8] Membuat struktur folder dan file konfigurasi..."
+echo "[6/9] Membuat struktur folder dan file konfigurasi..."
 mkdir -p "${DIR_AUDIO}"
 mkdir -p "${DIR_FLAG}"
 
@@ -177,14 +331,46 @@ fi
 # --------------------------------------------------------------------
 # 4. MEMBUAT SEMUA SKRIP INTI SISTEM
 # --------------------------------------------------------------------
-echo "[4/8] Membuat berkas skrip operasional audio..."
+echo "[7/9] Membuat berkas skrip operasional audio..."
 
-# PERBAIKAN: setiap skrip di bawah ini memakai baris berikut untuk
-# menemukan sekolah.conf secara dinamis, mengikuti lokasi skrip itu
-# sendiri. Ini menggantikan cara lama (hardcode path + sed di akhir)
-# yang rapuh dan berisiko salah tambal.
+# Setiap skrip di bawah ini memakai baris berikut untuk menemukan
+# sekolah.conf secara dinamis, mengikuti lokasi skrip itu sendiri.
 #   DIR_SKRIP="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 #   source "${DIR_SKRIP}/sekolah.conf"
+
+# Skrip pasang_bt.sh (BARU) - untuk pairing ulang manual kapan saja,
+# misalnya kalau speaker direset/diganti/pindah lokasi.
+cat <<'EOF' > ${DIR_BASE}/pasang_bt.sh
+#!/bin/bash
+DIR_SKRIP="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${DIR_SKRIP}/sekolah.conf"
+
+echo "===================================================="
+echo " PAIRING ULANG SPEAKER BLUETOOTH: ${MAC_SPEAKER}"
+echo "===================================================="
+echo "Pastikan speaker/mixer SEDANG dalam mode pairing (lampu berkedip),"
+echo "lalu tekan Enter untuk melanjutkan..."
+read -r _
+
+sudo rfkill unblock bluetooth
+bluetoothctl power on
+bluetoothctl agent NoInputNoOutput
+bluetoothctl default-agent
+echo "Memindai perangkat selama 10 detik..."
+bluetoothctl --timeout 10 scan on
+bluetoothctl devices | grep -i "$MAC_SPEAKER" && echo "[INFO] Speaker terdeteksi." || echo "[PERINGATAN] Speaker belum terdeteksi, cek jarak/mode pairing."
+
+echo "Mencoba pair..."
+bluetoothctl pair "$MAC_SPEAKER"
+bluetoothctl trust "$MAC_SPEAKER"
+bluetoothctl connect "$MAC_SPEAKER"
+
+echo "----------------------------------------------------"
+bluetoothctl info "$MAC_SPEAKER" | grep -E "Connected|Paired|Trusted|Name"
+echo "----------------------------------------------------"
+echo "Kalau 'Connected: yes' di atas, speaker sudah siap dipakai."
+echo "Kalau masih gagal, cek log: ${LOG_FILE}"
+EOF
 
 # Skrip sambung_bt.sh
 cat <<'EOF' > ${DIR_BASE}/sambung_bt.sh
@@ -200,15 +386,23 @@ fi
 
 bluetoothctl power on
 sleep 1
+# PERBAIKAN: trust dulu sebelum connect (jaga-jaga kalau trust flag
+# tercabut, misalnya setelah unpair/pair ulang otomatis oleh speaker).
+bluetoothctl trust "$MAC_SPEAKER" >/dev/null 2>&1
 echo "$(date '+%Y-%m-%d %H:%M:%S') - [INFO] - Memulai jaring pengaman koneksi Bluetooth di ${NAMA_SEKOLAH}..." >> "$LOG_FILE"
 
 for i in {1..3}; do
-    bluetoothctl connect "$MAC_SPEAKER"
+    HASIL=$(bluetoothctl connect "$MAC_SPEAKER" 2>&1)
     sleep 3
     if bluetoothctl info "$MAC_SPEAKER" | grep -q "Connected: yes"; then
         echo "$(date '+%Y-%m-%d %H:%M:%S') - [SUCCESS] - Bluetooth tersambung pada percobaan ke-$i." >> "$LOG_FILE"
         echo 0 > "$GAGAL_FILE"
         exit 0
+    else
+        # PERBAIKAN: catat alasan gagal yang sebenarnya dari bluetoothctl,
+        # supaya kalau tetap gagal, penyebabnya kelihatan di log (misalnya
+        # "Device not available" = belum pernah di-pair, dsb).
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - [DEBUG] - Percobaan ke-$i: ${HASIL}" >> "$LOG_FILE"
     fi
 done
 
@@ -216,11 +410,23 @@ GAGAL_KE=$(( $(cat "$GAGAL_FILE" 2>/dev/null || echo 0) + 1 ))
 echo "$GAGAL_KE" > "$GAGAL_FILE"
 echo "$(date '+%Y-%m-%d %H:%M:%S') - [WARNING] - Gagal koneksi (beruntun ke-$GAGAL_KE)." >> "$LOG_FILE"
 
+# Kalau perangkat memang belum pernah dipasangkan, restart adapter tidak
+# akan menolong -- beri tahu dengan jelas di log.
+if ! bluetoothctl devices Paired | grep -qi "$MAC_SPEAKER"; then
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - [CRITICAL] - Speaker $MAC_SPEAKER BELUM PERNAH DI-PAIR. Jalankan ${DIR_SKRIP}/pasang_bt.sh secara manual." >> "$LOG_FILE"
+fi
+
 if [ "$GAGAL_KE" -ge 3 ]; then
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - [RECOVERY] - Reset adapter Bluetooth karena gagal beruntun." >> "$LOG_FILE"
-    sudo rfkill block bluetooth
-    sleep 2
-    sudo rfkill unblock bluetooth
+    # PERBAIKAN (V7): rfkill TIDAK dipakai lagi di sini. Dengan
+    # AutoEnable=true (adapter otomatis nyala tiap boot) dan
+    # anti-putus.service (menjaga koneksi tetap hidup terus-menerus),
+    # seharusnya adapter memang tidak pernah dalam kondisi ter-blok
+    # oleh rfkill saat runtime -- rfkill hanya dipakai sekali saat
+    # instalasi awal / lewat pasang_bt.sh secara manual kalau memang
+    # diperlukan. Recovery otomatis di sini cukup restart service
+    # bluetooth & bluealsa saja, tanpa menyentuh rfkill.
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - [RECOVERY] - Gagal beruntun ke-$GAGAL_KE, restart service bluetooth & bluealsa." >> "$LOG_FILE"
+    sudo systemctl restart bluetooth bluealsa 2>>"$LOG_FILE"
     sleep 3
     bluetoothctl power on
     bluetoothctl connect "$MAC_SPEAKER"
@@ -235,15 +441,25 @@ DIR_SKRIP="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${DIR_SKRIP}/sekolah.conf"
 HENING_PID=""
 while true; do
-    if pgrep -x "mpv" > /dev/null; then
+    # PERBAIKAN: hanya jaga koneksi kalau memang sedang terhubung,
+    # supaya tidak spam proses aplay yang gagal terus-menerus saat
+    # speaker sedang putus (menunggu bel berikutnya reconnect).
+    if bluetoothctl info "$MAC_SPEAKER" | grep -q "Connected: yes"; then
+        if pgrep -x "mpv" > /dev/null; then
+            if [ -n "$HENING_PID" ] && kill -0 "$HENING_PID" 2>/dev/null; then
+                kill "$HENING_PID" 2>/dev/null
+                HENING_PID=""
+            fi
+        else
+            if [ -z "$HENING_PID" ] || ! kill -0 "$HENING_PID" 2>/dev/null; then
+                aplay -q -D bluealsa -f cd -t raw /dev/zero > /dev/null 2>&1 &
+                HENING_PID=$!
+            fi
+        fi
+    else
         if [ -n "$HENING_PID" ] && kill -0 "$HENING_PID" 2>/dev/null; then
             kill "$HENING_PID" 2>/dev/null
             HENING_PID=""
-        fi
-    else
-        if [ -z "$HENING_PID" ] || ! kill -0 "$HENING_PID" 2>/dev/null; then
-            aplay -q -D bluealsa -f cd -t raw /dev/zero > /dev/null 2>&1 &
-            HENING_PID=$!
         fi
     fi
     sleep 2
@@ -273,6 +489,14 @@ for f in "${FILES[@]}"; do
 done
 
 "${DIR_SKRIP}/sambung_bt.sh"
+
+# Cek betul-betul status koneksi sebelum main, dan catat CRITICAL yang
+# jelas kalau tetap tidak konek (bukan diam-diam gagal). Output audio
+# HANYA lewat Bluetooth (tidak ada fallback ke audio lokal PC).
+if ! bluetoothctl info "$MAC_SPEAKER" | grep -q "Connected: yes"; then
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - [CRITICAL] - $NAMA GAGAL DIPUTAR: Bluetooth speaker tidak terhubung. Cek ${DIR_SKRIP}/pasang_bt.sh" >> "$LOG_FILE"
+fi
+
 amixer -q sset Master 100% 2>/dev/null
 
 DAFTAR=$(printf '%s, ' "${FILES[@]##*/}")
@@ -303,7 +527,7 @@ if [ -n "$BARIS_JADWAL" ]; then
 fi
 EOF
 
-# Skrip cek_disk.sh (BARU - menggantikan baris cron lama yang bermasalah)
+# Skrip cek_disk.sh
 cat <<'EOF' > ${DIR_BASE}/cek_disk.sh
 #!/bin/bash
 DIR_SKRIP="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -479,14 +703,48 @@ DIR_SKRIP="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${DIR_SKRIP}/sekolah.conf"
 echo "=== STATUS SERVER: ${NAMA_SEKOLAH} ==="
 systemctl is-active anti-putus.service tahrim-daemon.service
+echo -e "\n=== 10 LOG CRITICAL/WARNING TERAKHIR ==="
+grep -E "CRITICAL|WARNING" "$LOG_FILE" 2>/dev/null | tail -10 || echo "(tidak ada / log belum ada)"
 echo -e "\n=== KONEKSI BLUETOOTH ==="
-bluetoothctl info "$MAC_SPEAKER" | grep -E "Connected|Name"
+bluetoothctl info "$MAC_SPEAKER" | grep -E "Connected|Paired|Trusted|Name"
 echo -e "\n=== SINKRONISASI WAKTU ==="
 timedatectl show -p NTPSynchronized --value
 echo -e "\n=== SISA RUANG DISK ==="
 df -h "${DIR_BASE}" | tail -1
 echo -e "\n=== STATUS AKTIVASI FITUR AUDIO ==="
 "${DIR_SKRIP}/mode_sekolah.sh" status
+EOF
+
+# Skrip alert_gagal.sh (BARU V6) - dipanggil systemd lewat OnFailure=
+# saat anti-putus.service atau tahrim-daemon.service benar-benar gagal
+# (bukan sekadar reconnect biasa, tapi service-nya sendiri berhenti).
+cat <<'EOF' > ${DIR_BASE}/alert_gagal.sh
+#!/bin/bash
+DIR_SKRIP="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${DIR_SKRIP}/sekolah.conf"
+NAMA_SERVICE="${1:-tidak_diketahui}"
+echo "$(date '+%Y-%m-%d %H:%M:%S') - [CRITICAL] - Service ${NAMA_SERVICE} BERHENTI/GAGAL tak terduga (systemd OnFailure). Cek: systemctl status ${NAMA_SERVICE}" >> "$LOG_FILE"
+EOF
+
+# Skrip cek_service.sh (BARU V6) - watchdog cron sebagai jaring pengaman
+# KEDUA di luar systemd, jaga-jaga kalau OnFailure tidak sempat terpicu
+# (misal proses mati tanpa systemd sadar service gagal).
+cat <<'EOF' > ${DIR_BASE}/cek_service.sh
+#!/bin/bash
+DIR_SKRIP="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${DIR_SKRIP}/sekolah.conf"
+for SVC in anti-putus.service tahrim-daemon.service; do
+    if ! systemctl is-active --quiet "$SVC"; then
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - [CRITICAL] - Watchdog: $SVC TIDAK AKTIF. Mencoba restart..." >> "$LOG_FILE"
+        sudo systemctl restart "$SVC" 2>>"$LOG_FILE"
+        sleep 3
+        if systemctl is-active --quiet "$SVC"; then
+            echo "$(date '+%Y-%m-%d %H:%M:%S') - [RECOVERY] - Watchdog: $SVC berhasil di-restart." >> "$LOG_FILE"
+        else
+            echo "$(date '+%Y-%m-%d %H:%M:%S') - [CRITICAL] - Watchdog: $SVC GAGAL di-restart, perlu pengecekan manual." >> "$LOG_FILE"
+        fi
+    fi
+done
 EOF
 
 # Skrip backup.sh
@@ -507,15 +765,26 @@ chown -R ${USER_SISTEM}:${USER_SISTEM} ${DIR_BASE}/
 # --------------------------------------------------------------------
 # 5. REGISTER DAN AKTIFKAN SYSTEMD SERVICE (24 JAM NONSTOP)
 # --------------------------------------------------------------------
-echo "[5/8] Daftarkan skrip ke Systemd Service..."
+echo "[8/9] Daftarkan skrip ke Systemd Service..."
 
+# PERBAIKAN: tambah After=/Wants= ke bluealsa.service supaya tidak
+# race condition saat baru boot (daemon coba pakai bluealsa sebelum siap).
+# PERBAIKAN (V6): tambah OnFailure= + StartLimit supaya kalau service
+# benar-benar gagal berulang kali (bukan sekadar Restart=always biasa),
+# systemd akan memicu otomasi-audio-alert@.service yang mencatatnya
+# sebagai CRITICAL ke log -- bukan cuma diam-diam mencoba restart terus.
 cat <<EOF > /etc/systemd/system/anti-putus.service
 [Unit]
 Description=Penjaga Koneksi Bluetooth Mixer Audio Sekolah
-After=bluetooth.target network.target
+After=bluetooth.target bluealsa.service network.target
+Wants=bluealsa.service
+OnFailure=otomasi-audio-alert@%n.service
+StartLimitIntervalSec=300
+StartLimitBurst=10
 
 [Service]
 Type=simple
+ExecStartPre=/bin/sleep 5
 ExecStart=${DIR_BASE}/anti_putus.sh
 Restart=always
 RestartSec=5
@@ -528,11 +797,15 @@ EOF
 cat <<EOF > /etc/systemd/system/tahrim-daemon.service
 [Unit]
 Description=Daemon Jadwal Tarhim Otomatis
-After=network-online.target bluetooth.target
-Wants=network-online.target
+After=network-online.target bluetooth.target bluealsa.service
+Wants=network-online.target bluealsa.service
+OnFailure=otomasi-audio-alert@%n.service
+StartLimitIntervalSec=300
+StartLimitBurst=10
 
 [Service]
 Type=simple
+ExecStartPre=/bin/sleep 5
 ExecStart=${DIR_BASE}/tahrim_daemon.sh
 Restart=always
 RestartSec=10
@@ -542,14 +815,26 @@ User=${USER_SISTEM}
 WantedBy=multi-user.target
 EOF
 
-systemctl daemon-reload
-systemctl enable --now anti-putus.service
-systemctl enable --now tahrim-daemon.service
+# Template service alert (BARU V6) - dipanggil otomatis lewat OnFailure=
+# di atas kalau salah satu service benar-benar gagal berulang kali.
+cat <<EOF > /etc/systemd/system/otomasi-audio-alert@.service
+[Unit]
+Description=Notifikasi kegagalan service otomasi audio (%i)
+
+[Service]
+Type=oneshot
+ExecStart=${DIR_BASE}/alert_gagal.sh %i
+User=${USER_SISTEM}
+EOF
+
+jalankan "Reload daemon systemd (service utama)" systemctl daemon-reload
+jalankan "Aktifkan anti-putus.service" systemctl enable --now anti-putus.service
+jalankan "Aktifkan tahrim-daemon.service" systemctl enable --now tahrim-daemon.service
 
 # --------------------------------------------------------------------
 # 6. INSTALASI MANAJEMEN LOG (LOGROTATE GLOBAL)
 # --------------------------------------------------------------------
-echo "[6/8] Mengonfigurasi Logrotate global..."
+echo "[8b/9] Mengonfigurasi Logrotate global..."
 touch "${LOG_FILE}"
 chown ${USER_SISTEM}:audio "${LOG_FILE}"
 chmod 664 "${LOG_FILE}"
@@ -572,8 +857,8 @@ chmod 644 /etc/logrotate.d/otomasi-audio
 # --------------------------------------------------------------------
 # 7. MENYUSUN JADWAL HARIAN TETAP (CRONTAB)
 # --------------------------------------------------------------------
-echo "[7/8] Mendaftarkan jadwal harian tetap di Crontab..."
-crontab -l -u ${USER_SISTEM} 2>/dev/null | grep -v "putar_audio.sh\|cek_ujian.sh\|cek_disk.sh\|backup.sh\|df /home" > /tmp/cron_bak
+echo "[8c/9] Mendaftarkan jadwal harian tetap di Crontab..."
+crontab -l -u ${USER_SISTEM} 2>/dev/null | grep -v "putar_audio.sh\|cek_ujian.sh\|cek_disk.sh\|cek_service.sh\|backup.sh\|df /home" > /tmp/cron_bak
 
 cat <<EOF >> /tmp/cron_bak
 # --- JADWAL TETAP HARIAN GENERATED BY AUTOMATION ---
@@ -582,16 +867,17 @@ cat <<EOF >> /tmp/cron_bak
 55 11 * * 1-4,6 ${DIR_BASE}/putar_audio.sh bel_dzuhur "Bel Dzuhur" ${DIR_AUDIO}/Bel-Persiapan-Sholat-dzuhur.mp3
 * * * * * ${DIR_BASE}/cek_ujian.sh
 0 7 * * * ${DIR_BASE}/cek_disk.sh
+*/5 * * * * ${DIR_BASE}/cek_service.sh
 55 23 * * * ${DIR_BASE}/backup.sh
 EOF
 
-crontab -u ${USER_SISTEM} /tmp/cron_bak
+jalankan "Memasang jadwal crontab" crontab -u ${USER_SISTEM} /tmp/cron_bak
 rm -f /tmp/cron_bak
 
 # --------------------------------------------------------------------
-# 8. VERIFIKASI AKHIR & RINGKASAN INSTALASI (BARU - sebelumnya hilang)
+# 8. VERIFIKASI AKHIR & RINGKASAN INSTALASI
 # --------------------------------------------------------------------
-echo "[8/8] Verifikasi akhir & ringkasan instalasi..."
+echo "[9/9] Verifikasi akhir & ringkasan instalasi..."
 
 DAFTAR_AUDIO_WAJIB=(
     "bel-masuk-ruangan.mp3" "bel-mulai-ujian.mp3" "istirahat.mp3"
@@ -605,13 +891,30 @@ for f in "${DAFTAR_AUDIO_WAJIB[@]}"; do
     [ -f "${DIR_AUDIO}/${f}" ] || AUDIO_HILANG+=("$f")
 done
 
+# PERBAIKAN (BARU): cek status pairing & koneksi secara eksplisit di
+# ringkasan akhir, supaya masalah bluetooth langsung kelihatan di sini
+# dan tidak perlu menunggu bel pertama berbunyi untuk tahu ada masalah.
+STATUS_PAIRED="TIDAK"
+STATUS_CONNECTED="TIDAK"
+bluetoothctl devices Paired | grep -qi "$MAC_SPEAKER" && STATUS_PAIRED="YA"
+bluetoothctl info "$MAC_SPEAKER" | grep -q "Connected: yes" && STATUS_CONNECTED="YA"
+
 echo "===================================================="
 echo " INSTALASI SELESAI - ${NAMA_SEKOLAH}"
 echo "===================================================="
-echo " Service aktif : anti-putus.service, tahrim-daemon.service"
-echo " Folder utama  : ${DIR_BASE}"
-echo " Folder audio  : ${DIR_AUDIO}"
-echo " Log sistem    : ${LOG_FILE}"
+echo " Service aktif   : anti-putus.service, tahrim-daemon.service"
+echo " Folder utama    : ${DIR_BASE}"
+echo " Folder audio    : ${DIR_AUDIO}"
+echo " Log sistem      : ${LOG_FILE}"
+echo "----------------------------------------------------"
+echo " STATUS BLUETOOTH SPEAKER (${MAC_SPEAKER})"
+echo "   Sudah Paired  : ${STATUS_PAIRED}"
+echo "   Sudah Connect : ${STATUS_CONNECTED}"
+if [ "$STATUS_PAIRED" = "TIDAK" ] || [ "$STATUS_CONNECTED" = "TIDAK" ]; then
+    echo "   [PERHATIAN] Bluetooth BELUM siap. Jalankan perintah berikut:"
+    echo "     sudo ${DIR_BASE}/pasang_bt.sh"
+    echo "   (Pastikan speaker dalam mode pairing saat menjalankannya.)"
+fi
 echo "----------------------------------------------------"
 if [ "${#AUDIO_HILANG[@]}" -eq 0 ]; then
     echo " Semua file audio bawaan sudah lengkap. Mantap!"
@@ -625,7 +928,15 @@ fi
 echo "----------------------------------------------------"
 echo " Langkah selanjutnya:"
 echo "  1. Salin file-file .mp3 ke folder ${DIR_AUDIO}/"
-echo "  2. Cek status sistem  : ${DIR_BASE}/cek_kesehatan.sh"
-echo "  3. Atur jadwal ujian  : ${DIR_BASE}/kelola_ujian.sh"
-echo "  4. Atur mode sekolah  : ${DIR_BASE}/mode_sekolah.sh"
+echo "  2. Kalau Bluetooth belum siap: sudo ${DIR_BASE}/pasang_bt.sh"
+echo "  3. Cek status sistem  : ${DIR_BASE}/cek_kesehatan.sh"
+echo "  4. Atur jadwal ujian  : ${DIR_BASE}/kelola_ujian.sh"
+echo "  5. Atur mode sekolah  : ${DIR_BASE}/mode_sekolah.sh"
+echo "----------------------------------------------------"
+echo " Catatan V7:"
+echo "  - Output audio HANYA lewat Bluetooth speaker (tidak ada"
+echo "    fallback ke audio lokal). anti-putus.service menjaga koneksi"
+echo "    tetap hidup nonstop supaya bel tidak pernah bisu."
+echo "  - Watchdog cek_service.sh berjalan tiap 5 menit lewat cron"
+echo "    untuk memastikan kedua service utama tetap hidup."
 echo "===================================================="
