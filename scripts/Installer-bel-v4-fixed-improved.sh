@@ -59,6 +59,16 @@
 #      adapter seharusnya tidak pernah dalam kondisi ter-blok saat
 #      runtime. Kalau tetap gagal 3x beruntun, recovery sekarang cukup
 #      restart service bluetooth & bluealsa saja.
+#
+# TAMBAHAN VERSION 8 (perbaikan bug instalasi):
+#  14. Paket 'policykit-1' TIDAK ADA lagi di Debian 12/13 (namanya
+#      berubah jadi 'polkitd'), sehingga baris 'apt install ... -y'
+#      yang menggabung semua paket jadi GAGAL TOTAL dan skrip exit 1.
+#      -> Sekarang instalasi Polkit dipisah dari paket inti, mencoba
+#      'policykit-1' lalu 'polkitd' sebagai fallback, dan kalau
+#      keduanya tetap tidak ada, hanya PERINGATAN (tidak fatal) --
+#      karena polkit di skrip ini cuma hardening tambahan, bukan
+#      syarat mutlak Bluetooth & bel bisa berfungsi.
 # ====================================================================
 
 set -o pipefail
@@ -67,7 +77,7 @@ set -o pipefail
 # 1. KONFIGURASI SEKOLAH (SESUAIKAN DI SINI SEBELUM MENJALANKAN)
 # --------------------------------------------------------------------
 USER_SISTEM="lenovo"                   # Nama user non-root di Debian
-NAMA_SEKOLAH="SMK Nurussalaf Kemiri"   # Nama Sekolah Anda
+NAMA_SEKOLAH="SMK Negeri Purworejo"     # Nama Sekolah Anda
 GARIS_LINTANG="-7.7134"                # Koordinat Lintang Sekolah
 GARIS_BUJUR="109.9961"                 # Koordinat Bujur Sekolah
 MAC_SPEAKER="7d:5b:22:c8:4d:ab"        # MAC Address Mixer/Speaker Bluetooth
@@ -127,7 +137,7 @@ jalankan() {
 }
 
 echo "===================================================="
-echo " Memulai Instalasi Otomatisasi Audio V7 untuk:"
+echo " Memulai Instalasi Otomatisasi Audio V8 untuk:"
 echo " ${NAMA_SEKOLAH}"
 echo "===================================================="
 
@@ -136,9 +146,27 @@ echo "===================================================="
 # --------------------------------------------------------------------
 echo "[1/9] Menginstal paket pendukung Debian..."
 apt update && apt upgrade -y
-if ! apt install bluez bluez-tools bluez-alsa-utils alsa-utils mpv curl jq rfkill nano fail2ban systemd-timesyncd policykit-1 -y; then
+if ! apt install bluez bluez-tools bluez-alsa-utils alsa-utils mpv curl jq rfkill nano fail2ban systemd-timesyncd -y; then
     echo "[ERROR] Gagal menginstal paket dependensi. Periksa koneksi internet / repository apt Anda."
     exit 1
+fi
+
+# PERBAIKAN (V8): 'policykit-1' sudah TIDAK ADA lagi namanya di Debian
+# 12/13 -- diganti jadi 'polkitd'. Sebelumnya paket ini digabung dalam
+# satu baris 'apt install ... -y', jadi satu nama paket yang tidak
+# ditemukan bikin SELURUH instalasi dianggap gagal & skrip exit 1.
+# Sekarang dipisah dan dicoba kedua nama; kalau tetap tidak ada,
+# hanya PERINGATAN (bukan fatal) karena polkit di sini cuma hardening
+# tambahan untuk izin D-Bus, bukan syarat mutlak Bluetooth bisa jalan.
+echo "Menginstal Polkit (policykit-1 / polkitd)..."
+if apt install policykit-1 -y 2>/dev/null; then
+    echo "  [OK] policykit-1 terpasang."
+elif apt install polkitd pkexec -y 2>/dev/null; then
+    echo "  [OK] polkitd terpasang (nama pengganti policykit-1 di Debian baru)."
+else
+    echo "  [PERINGATAN] Tidak bisa memasang policykit-1 maupun polkitd."
+    echo "               Aturan Polkit tambahan akan dilewati -- fitur inti"
+    echo "               Bluetooth & bel tetap berjalan normal."
 fi
 
 # Atur zona waktu dan aktifkan NTP
