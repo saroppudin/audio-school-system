@@ -69,6 +69,20 @@
 #      keduanya tetap tidak ada, hanya PERINGATAN (tidak fatal) --
 #      karena polkit di skrip ini cuma hardening tambahan, bukan
 #      syarat mutlak Bluetooth & bel bisa berfungsi.
+#
+# TAMBAHAN VERSION 9 (perbaikan "br-connection-profile-unavailable"):
+#  15. Root cause error 'org.bluez.Error.Failed:
+#      br-connection-profile-unavailable' adalah BlueZ mencoba
+#      menyambungkan profil A2DP Sink padahal daemon bluealsa (yang
+#      mendaftarkan profil itu ke BlueZ lewat D-Bus) belum aktif /
+#      belum selesai registrasi saat 'bluetoothctl connect' dipanggil.
+#      -> Sekarang SETIAP tempat yang memanggil 'bluetoothctl connect'
+#      (installer, pasang_bt.sh, sambung_bt.sh) memverifikasi dulu
+#      bahwa service bluealsa benar-benar 'active', me-restart-nya
+#      kalau belum, lalu mencoba connect dengan retry loop. Kalau
+#      error yang sama tetap muncul di tengah retry, bluealsa
+#      di-restart ulang sebelum percobaan berikutnya (bukan menunggu
+#      3 kegagalan beruntun seperti sebelumnya).
 # ====================================================================
 
 set -o pipefail
@@ -137,7 +151,7 @@ jalankan() {
 }
 
 echo "===================================================="
-echo " Memulai Instalasi Otomatisasi Audio V8 untuk:"
+echo " Memulai Instalasi Otomatisasi Audio V9 untuk:"
 echo " ${NAMA_SEKOLAH}"
 echo "===================================================="
 
@@ -246,6 +260,27 @@ sleep 1
 jalankan "Restart service bluealsa" systemctl restart bluealsa
 sleep 2
 
+# PERBAIKAN (BARU V9): verifikasi bluealsa BENAR-BENAR aktif (bukan
+# cuma percaya exit code 'systemctl restart' saja). Ini persis daemon
+# yang mendaftarkan profil A2DP Sink ke BlueZ lewat D-Bus -- kalau dia
+# belum 'active' saat 'bluetoothctl connect' dipanggil, BlueZ akan
+# menolak dengan error "br-connection-profile-unavailable".
+echo "  Memverifikasi service bluealsa benar-benar aktif..."
+for _percobaan in 1 2 3; do
+    if systemctl is-active --quiet bluealsa; then
+        echo "  [OK] bluealsa aktif."
+        break
+    fi
+    echo "  [PERINGATAN] bluealsa belum aktif, mencoba restart (percobaan ${_percobaan}/3)..."
+    systemctl restart bluealsa
+    sleep 3
+done
+if ! systemctl is-active --quiet bluealsa; then
+    echo "  [ERROR] bluealsa TETAP gagal aktif. Cek manual: journalctl -u bluealsa -n 50 --no-pager"
+    echo "          Selama bluealsa tidak aktif, koneksi Bluetooth speaker akan"
+    echo "          SELALU gagal dengan error 'br-connection-profile-unavailable'."
+fi
+
 # PERBAIKAN (BARU): kunci PCM ALSA "bluealsa" ke MAC speaker yang benar.
 # Tanpa ini, DEV memakai placeholder 00:00:00:00:00:00 dan audio TIDAK
 # akan pernah keluar ke speaker walau Bluetooth berhasil connect.
@@ -281,7 +316,35 @@ else
     echo "  Setelah instalasi selesai, jalankan manual: ${DIR_BASE}/pasang_bt.sh"
 fi
 bluetoothctl trust "$MAC_SPEAKER" >/dev/null 2>&1
-bluetoothctl connect "$MAC_SPEAKER" 2>&1 | tee -a "$LOG_FILE"
+
+# PERBAIKAN (BARU V9): connect dengan retry loop. Kalau BlueZ membalas
+# dengan "br-connection-profile-unavailable" di tengah percobaan
+# (artinya bluealsa sempat belum siap / profil belum ter-registrasi),
+# restart bluealsa dulu sebelum mencoba lagi, alih-alih menyerah di
+# percobaan pertama.
+echo "  Mencoba connect ke speaker (dengan retry otomatis)..."
+KONEK_OK=0
+for _percobaan_connect in 1 2 3 4 5; do
+    HASIL_CONNECT=$(bluetoothctl connect "$MAC_SPEAKER" 2>&1)
+    echo "$HASIL_CONNECT" | tee -a "$LOG_FILE"
+    if echo "$HASIL_CONNECT" | grep -qi "Connection successful"; then
+        KONEK_OK=1
+        break
+    fi
+    if echo "$HASIL_CONNECT" | grep -qi "br-connection-profile-unavailable"; then
+        echo "  [INFO] Profil A2DP belum siap di BlueZ, restart bluealsa lalu coba lagi (percobaan ${_percobaan_connect}/5)..."
+        systemctl restart bluealsa
+        sleep 4
+    else
+        sleep 2
+    fi
+done
+if [ "$KONEK_OK" -eq 1 ]; then
+    echo "  [OK] Speaker berhasil terhubung."
+else
+    echo "  [PERINGATAN] Speaker belum berhasil terhubung otomatis."
+    echo "  Setelah instalasi selesai, jalankan manual: ${DIR_BASE}/pasang_bt.sh"
+fi
 
 # PERBAIKAN: sudoers ditulis ke file terpisah di /etc/sudoers.d/ dan
 # divalidasi dengan visudo -c, jauh lebih aman daripada menambahkan
@@ -388,16 +451,57 @@ echo "Memindai perangkat selama 10 detik..."
 bluetoothctl --timeout 10 scan on
 bluetoothctl devices | grep -i "$MAC_SPEAKER" && echo "[INFO] Speaker terdeteksi." || echo "[PERINGATAN] Speaker belum terdeteksi, cek jarak/mode pairing."
 
+# PERBAIKAN (BARU V9): pastikan bluealsa (pendaftar profil A2DP Sink
+# ke BlueZ) benar-benar aktif SEBELUM mencoba connect. Kalau tidak,
+# BlueZ akan menolak dengan "br-connection-profile-unavailable" walau
+# pairing/trust sukses.
+echo "Memastikan layanan bluealsa aktif..."
+for i in 1 2 3; do
+    if systemctl is-active --quiet bluealsa; then
+        echo "  [OK] bluealsa aktif."
+        break
+    fi
+    echo "  bluealsa belum aktif, restart (percobaan $i/3)..."
+    sudo systemctl restart bluealsa
+    sleep 3
+done
+if ! systemctl is-active --quiet bluealsa; then
+    echo "  [ERROR] bluealsa tetap gagal aktif. Cek: journalctl -u bluealsa -n 50 --no-pager"
+fi
+
 echo "Mencoba pair..."
 bluetoothctl pair "$MAC_SPEAKER"
 bluetoothctl trust "$MAC_SPEAKER"
-bluetoothctl connect "$MAC_SPEAKER"
+
+# PERBAIKAN (BARU V9): connect dengan retry, dan kalau errornya
+# spesifik "br-connection-profile-unavailable", restart bluealsa dulu
+# di tengah percobaan (bukan cuma sekali coba lalu menyerah).
+KONEK_OK=0
+for i in 1 2 3 4 5; do
+    HASIL=$(bluetoothctl connect "$MAC_SPEAKER" 2>&1)
+    echo "$HASIL"
+    if echo "$HASIL" | grep -qi "Connection successful"; then
+        KONEK_OK=1
+        break
+    fi
+    if echo "$HASIL" | grep -qi "br-connection-profile-unavailable"; then
+        echo "  [INFO] Profil A2DP belum siap di BlueZ, restart bluealsa lalu coba lagi (percobaan $i/5)..."
+        sudo systemctl restart bluealsa
+        sleep 4
+    else
+        sleep 2
+    fi
+done
 
 echo "----------------------------------------------------"
 bluetoothctl info "$MAC_SPEAKER" | grep -E "Connected|Paired|Trusted|Name"
 echo "----------------------------------------------------"
-echo "Kalau 'Connected: yes' di atas, speaker sudah siap dipakai."
-echo "Kalau masih gagal, cek log: ${LOG_FILE}"
+if [ "$KONEK_OK" -eq 1 ]; then
+    echo "Speaker sudah siap dipakai."
+else
+    echo "Kalau masih gagal, cek log: ${LOG_FILE}"
+    echo "dan cek layanan bluealsa: journalctl -u bluealsa -n 50 --no-pager"
+fi
 EOF
 
 # Skrip sambung_bt.sh
@@ -410,6 +514,16 @@ GAGAL_FILE="${DIR_BASE}/.gagal_beruntun"
 if bluetoothctl info "$MAC_SPEAKER" | grep -q "Connected: yes"; then
     echo 0 > "$GAGAL_FILE"
     exit 0
+fi
+
+# PERBAIKAN (BARU V9): pastikan bluealsa aktif SEBELUM mencoba connect
+# sama sekali. Ini penyebab paling umum dari error
+# "br-connection-profile-unavailable" -- BlueZ tidak menemukan profil
+# A2DP Sink karena bluealsa belum/tidak aktif saat connect dipanggil.
+if ! systemctl is-active --quiet bluealsa; then
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - [WARNING] - bluealsa tidak aktif, restart sebelum connect." >> "$LOG_FILE"
+    sudo systemctl restart bluealsa
+    sleep 4
 fi
 
 bluetoothctl power on
@@ -431,6 +545,14 @@ for i in {1..3}; do
         # supaya kalau tetap gagal, penyebabnya kelihatan di log (misalnya
         # "Device not available" = belum pernah di-pair, dsb).
         echo "$(date '+%Y-%m-%d %H:%M:%S') - [DEBUG] - Percobaan ke-$i: ${HASIL}" >> "$LOG_FILE"
+        # PERBAIKAN (BARU V9): kalau errornya spesifik profil A2DP belum
+        # tersedia, restart bluealsa SEGERA di tengah retry loop ini,
+        # jangan tunggu sampai 3 kegagalan beruntun lintas-eksekusi cron.
+        if echo "$HASIL" | grep -qi "br-connection-profile-unavailable"; then
+            echo "$(date '+%Y-%m-%d %H:%M:%S') - [RECOVERY] - Profil A2DP belum siap, restart bluealsa segera (percobaan ke-$i)." >> "$LOG_FILE"
+            sudo systemctl restart bluealsa
+            sleep 4
+        fi
     fi
 done
 
@@ -731,6 +853,8 @@ DIR_SKRIP="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${DIR_SKRIP}/sekolah.conf"
 echo "=== STATUS SERVER: ${NAMA_SEKOLAH} ==="
 systemctl is-active anti-putus.service tahrim-daemon.service
+echo -e "\n=== STATUS BLUEALSA (profil A2DP Sink) ==="
+systemctl is-active bluealsa
 echo -e "\n=== 10 LOG CRITICAL/WARNING TERAKHIR ==="
 grep -E "CRITICAL|WARNING" "$LOG_FILE" 2>/dev/null | tail -10 || echo "(tidak ada / log belum ada)"
 echo -e "\n=== KONEKSI BLUETOOTH ==="
@@ -761,7 +885,7 @@ cat <<'EOF' > ${DIR_BASE}/cek_service.sh
 #!/bin/bash
 DIR_SKRIP="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${DIR_SKRIP}/sekolah.conf"
-for SVC in anti-putus.service tahrim-daemon.service; do
+for SVC in anti-putus.service tahrim-daemon.service bluealsa; do
     if ! systemctl is-active --quiet "$SVC"; then
         echo "$(date '+%Y-%m-%d %H:%M:%S') - [CRITICAL] - Watchdog: $SVC TIDAK AKTIF. Mencoba restart..." >> "$LOG_FILE"
         sudo systemctl restart "$SVC" 2>>"$LOG_FILE"
@@ -926,6 +1050,8 @@ STATUS_PAIRED="TIDAK"
 STATUS_CONNECTED="TIDAK"
 bluetoothctl devices Paired | grep -qi "$MAC_SPEAKER" && STATUS_PAIRED="YA"
 bluetoothctl info "$MAC_SPEAKER" | grep -q "Connected: yes" && STATUS_CONNECTED="YA"
+STATUS_BLUEALSA="TIDAK AKTIF"
+systemctl is-active --quiet bluealsa && STATUS_BLUEALSA="AKTIF"
 
 echo "===================================================="
 echo " INSTALASI SELESAI - ${NAMA_SEKOLAH}"
@@ -936,8 +1062,14 @@ echo " Folder audio    : ${DIR_AUDIO}"
 echo " Log sistem      : ${LOG_FILE}"
 echo "----------------------------------------------------"
 echo " STATUS BLUETOOTH SPEAKER (${MAC_SPEAKER})"
+echo "   Layanan bluealsa (profil A2DP Sink) : ${STATUS_BLUEALSA}"
 echo "   Sudah Paired  : ${STATUS_PAIRED}"
 echo "   Sudah Connect : ${STATUS_CONNECTED}"
+if [ "$STATUS_BLUEALSA" = "TIDAK AKTIF" ]; then
+    echo "   [PERHATIAN] bluealsa TIDAK AKTIF. Ini penyebab paling umum dari"
+    echo "   error 'br-connection-profile-unavailable'. Cek dengan:"
+    echo "     journalctl -u bluealsa -n 50 --no-pager"
+fi
 if [ "$STATUS_PAIRED" = "TIDAK" ] || [ "$STATUS_CONNECTED" = "TIDAK" ]; then
     echo "   [PERHATIAN] Bluetooth BELUM siap. Jalankan perintah berikut:"
     echo "     sudo ${DIR_BASE}/pasang_bt.sh"
@@ -961,10 +1093,12 @@ echo "  3. Cek status sistem  : ${DIR_BASE}/cek_kesehatan.sh"
 echo "  4. Atur jadwal ujian  : ${DIR_BASE}/kelola_ujian.sh"
 echo "  5. Atur mode sekolah  : ${DIR_BASE}/mode_sekolah.sh"
 echo "----------------------------------------------------"
-echo " Catatan V7:"
+echo " Catatan V9:"
 echo "  - Output audio HANYA lewat Bluetooth speaker (tidak ada"
 echo "    fallback ke audio lokal). anti-putus.service menjaga koneksi"
 echo "    tetap hidup nonstop supaya bel tidak pernah bisu."
 echo "  - Watchdog cek_service.sh berjalan tiap 5 menit lewat cron"
-echo "    untuk memastikan kedua service utama tetap hidup."
+echo "    untuk memastikan kedua service utama tetap hidup, TERMASUK"
+echo "    bluealsa (penyebab error br-connection-profile-unavailable"
+echo "    kalau service ini tidak aktif)."
 echo "===================================================="
