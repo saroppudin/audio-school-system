@@ -83,6 +83,26 @@
 #      error yang sama tetap muncul di tengah retry, bluealsa
 #      di-restart ulang sebelum percobaan berikutnya (bukan menunggu
 #      3 kegagalan beruntun seperti sebelumnya).
+#
+# TAMBAHAN VERSION 10 (perbaikan setelah pengujian langsung di lapangan):
+#  16. PROFIL BLUEALSA SALAH ARAH. V9 (dan versi sebelumnya) menjalankan
+#      bluealsa dengan '-p a2dp-sink', padahal speaker/mixer sekolah
+#      mengiklankan dirinya sebagai "Audio Sink" (penerima audio) --
+#      artinya bluealsa di PC seharusnya berperan sebagai SOURCE
+#      (pengirim), bukan SINK. Profil yang salah arah ini membuat BlueZ
+#      tidak pernah menemukan profil lokal yang cocok, dan connect SELALU
+#      gagal dengan "br-connection-profile-unavailable" walau pairing,
+#      trust, dan status bluealsa semuanya sudah benar. -> Diganti jadi
+#      '-p a2dp-source'.
+#  17. /etc/asound.conf SEKARANG MEMAKAI OVERRIDE PAKSA ("pcm.!bluealsa"
+#      / "ctl.!bluealsa" dengan tanda seru), bukan "pcm.bluealsa" biasa.
+#      Paket bluez-alsa-utils sudah punya definisi PCM "bluealsa" bawaan
+#      sendiri; tanpa tanda seru, ALSA MENGGABUNGKAN definisi baru ke
+#      definisi lama alih-alih menggantinya, sehingga field "slave" dari
+#      definisi lama nyangkut di plugin bluealsa yang tidak mengenalnya
+#      -> mpv/aplay gagal dengan "Unknown field slave" / "Invalid
+#      argument" walau Bluetooth sudah "Connected: yes". Tanda seru "!"
+#      memaksa ALSA mengganti total, bukan menggabungkan.
 # ====================================================================
 
 set -o pipefail
@@ -151,7 +171,7 @@ jalankan() {
 }
 
 echo "===================================================="
-echo " Memulai Instalasi Otomatisasi Audio V9 untuk:"
+echo " Memulai Instalasi Otomatisasi Audio V10 untuk:"
 echo " ${NAMA_SEKOLAH}"
 echo "===================================================="
 
@@ -243,13 +263,20 @@ cat <<EOF > /etc/dbus-1/system.d/60-otomasi-audio-bluetooth.conf
 EOF
 jalankan "Reload dbus" systemctl reload dbus.service
 
-# Konfigurasi BlueALSA ke mode A2DP sink saja
-echo "[3/9] Mengonfigurasi BlueALSA..."
+# PERBAIKAN (BARU V10 - PENTING): profil BlueALSA yang benar adalah
+# a2dp-source, BUKAN a2dp-sink. Speaker/mixer sekolah mengiklankan
+# dirinya sebagai "Audio Sink" (penerima audio) -- artinya PC di sini
+# berperan sebagai pengirim audio (SOURCE) ke speaker. Profil
+# "a2dp-sink" di PC dipakai untuk skenario terbalik (PC menerima audio
+# dari HP yang streaming ke PC), sehingga BlueZ tidak pernah menemukan
+# profil lokal yang cocok untuk konek ke speaker dan selalu menolak
+# dengan "br-connection-profile-unavailable" walau pairing/trust sukses.
+echo "[3/9] Mengonfigurasi BlueALSA (mode A2DP SOURCE -- PC mengirim audio ke speaker)..."
 mkdir -p /etc/systemd/system/bluealsa.service.d
 cat <<EOF > /etc/systemd/system/bluealsa.service.d/override.conf
 [Service]
 ExecStart=
-ExecStart=/usr/bin/bluealsa -p a2dp-sink
+ExecStart=/usr/bin/bluealsa -p a2dp-source
 EOF
 jalankan "Reload daemon systemd" systemctl daemon-reload
 jalankan "Restart service bluetooth" systemctl restart bluetooth
@@ -284,15 +311,26 @@ fi
 # PERBAIKAN (BARU): kunci PCM ALSA "bluealsa" ke MAC speaker yang benar.
 # Tanpa ini, DEV memakai placeholder 00:00:00:00:00:00 dan audio TIDAK
 # akan pernah keluar ke speaker walau Bluetooth berhasil connect.
+#
+# PERBAIKAN (BARU V10 - PENTING): pakai "pcm.!bluealsa" / "ctl.!bluealsa"
+# (dengan tanda seru), BUKAN "pcm.bluealsa" biasa. Paket bluez-alsa-utils
+# di Debian sudah menyediakan definisi PCM "bluealsa" bawaan sendiri di
+# /usr/share/alsa/alsa.conf.d/. Tanpa tanda seru, ALSA MENGGABUNGKAN
+# (merge) field-field baru ke definisi bawaan itu alih-alih menggantinya
+# -- field "slave" dari definisi lama ikut nyangkut di node yang sekarang
+# bertipe bluealsa, dan plugin bluealsa tidak mengenal field itu, sehingga
+# playback gagal dengan "Unknown field slave" / "Invalid argument" walau
+# Bluetooth sudah Connected: yes. Tanda seru "!" memaksa ALSA mengganti
+# total definisi lama, bukan menggabungkannya.
 echo "[4/9] Mengunci PCM ALSA 'bluealsa' ke speaker (${MAC_SPEAKER})..."
 [ -f /etc/asound.conf ] && cp /etc/asound.conf /etc/asound.conf.bak.$(date +%s)
 cat <<EOF > /etc/asound.conf
-pcm.bluealsa {
+pcm.!bluealsa {
     type bluealsa
     device "${MAC_SPEAKER}"
     profile "a2dp"
 }
-ctl.bluealsa {
+ctl.!bluealsa {
     type bluealsa
 }
 EOF
@@ -1093,7 +1131,10 @@ echo "  3. Cek status sistem  : ${DIR_BASE}/cek_kesehatan.sh"
 echo "  4. Atur jadwal ujian  : ${DIR_BASE}/kelola_ujian.sh"
 echo "  5. Atur mode sekolah  : ${DIR_BASE}/mode_sekolah.sh"
 echo "----------------------------------------------------"
-echo " Catatan V9:"
+echo " Catatan V10:"
+echo "  - BlueALSA berjalan sebagai a2dp-source (PC mengirim audio ke"
+echo "    speaker), dan /etc/asound.conf memakai override paksa (!)"
+echo "    supaya tidak bentrok dengan definisi PCM bawaan sistem."
 echo "  - Output audio HANYA lewat Bluetooth speaker (tidak ada"
 echo "    fallback ke audio lokal). anti-putus.service menjaga koneksi"
 echo "    tetap hidup nonstop supaya bel tidak pernah bisu."
