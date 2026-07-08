@@ -314,6 +314,11 @@ Untuk issues atau pertanyaan:
 3. Buka issue di GitHub
 4. Lihat [DEPLOYMENT.md](DEPLOYMENT.md) untuk deployment guide
 
+## Dokumentasi
+Lihat [Manual Book](docs/Manual-Book-Sistem-Bel-Sekolah.md) untuk panduan penggunaan harian dan pemeliharaan.
+
+## Versi Terbaru
+Installer versi V13 — lihat changelog lengkap di komentar header `scripts/Installer-bel-v13.sh`.
 ---
 
 ## 📄 Lisensi
