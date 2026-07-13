@@ -28,9 +28,9 @@ tail -20 /var/log/otomasi_audio.log | grep ERROR
 
 **Common causes & fixes:**
 - File missing: Upload audio files to `/home/lenovo/audio/`
-- Bluetooth disconnected: Run `sudo systemctl restart anti-putus.service`
+- Bluetooth disconnected: Run `sudo /home/lenovo/sambung_bt.sh` (reconnect langsung), atau `sudo systemctl restart bt-boot-connect.service` (reconnect sekali via service)
 - Volume low: Adjust with `amixer sset Master 100%`
-- Service not running: `sudo systemctl status anti-putus.service`
+- Service not running: `sudo systemctl status tahrim-daemon.service`
 
 ---
 
@@ -82,7 +82,7 @@ bluetoothctl power on
 
 # Option C: Remove and re-pair
 bluetoothctl remove <MAC_SPEAKER>
-# Then repeat pairing steps above
+# Then repeat pairing steps above, atau jalankan: sudo /home/lenovo/pasang_bt.sh
 ```
 
 ---
@@ -94,22 +94,26 @@ bluetoothctl remove <MAC_SPEAKER>
 **Troubleshooting steps:**
 ```bash
 # Check status
-sudo systemctl status anti-putus.service
 sudo systemctl status tahrim-daemon.service
+sudo systemctl status bt-boot-connect.service
+# Catatan: bt-boot-connect.service itu Type=oneshot, jadi WAJAR statusnya
+# "inactive (dead)" setelah sukses jalan sekali saat boot. Yang perlu
+# diperhatikan adalah exit code-nya, bukan status "active/inactive"-nya:
+sudo systemctl is-failed bt-boot-connect.service   # harus "active" (artinya TIDAK gagal)
 
 # View detailed logs
-sudo journalctl -u anti-putus.service -n 50
 sudo journalctl -u tahrim-daemon.service -n 50
+sudo journalctl -u bt-boot-connect.service -n 50
 
 # Check for errors
-sudo journalctl -u anti-putus.service | grep ERROR
+sudo journalctl -u tahrim-daemon.service | grep ERROR
 
 # Try to restart
-sudo systemctl restart anti-putus.service
+sudo systemctl restart tahrim-daemon.service
 sleep 2
 
 # Verify it's running
-sudo systemctl is-active anti-putus.service
+sudo systemctl is-active tahrim-daemon.service
 ```
 
 **Common causes:**
@@ -124,20 +128,26 @@ sudo systemctl is-active anti-putus.service
 
 **Symptoms:** Bluetooth keeps losing connection, requires manual reconnect
 
+> **Perubahan penting sejak V14:** service `anti-putus.service` (penjaga koneksi 24 jam yang mengirim audio kosong terus-menerus) sudah **dihapus**. Speaker sekarang boleh saja disconnect saat idle lama menunggu jadwal bel berikutnya — itu **normal**, bukan bug, karena `sambung_bt.sh` akan otomatis reconnect sesaat sebelum bel berikutnya diputar (dipanggil dari `putar_audio.sh`). Yang perlu dicurigai sebagai masalah **hanya** kalau reconnect itu **gagal** tepat saat mau bunyi bel.
+
 **Troubleshooting steps:**
 ```bash
-# Check reconnection attempts in log
-grep "Gagal koneksi" /var/log/otomasi_audio.log | wc -l
+# Step 1: Cek log SAAT JAM BEL berbunyi (bukan saat idle) - apakah ada
+# kegagalan reconnect tepat sebelum jadwal main?
+grep -B5 "\[PLAY\]" /var/log/otomasi_audio.log | tail -30
 
-# Check if service is trying to reconnect
-grep "RECOVERY" /var/log/otomasi_audio.log | tail -10
+# Step 2: Test manual reconnect langsung
+sudo /home/lenovo/sambung_bt.sh
+bluetoothctl info <MAC_SPEAKER> | grep Connected
 
-# Increase timeout if too frequent
-# Edit /home/lenovo/sambung_bt.sh
-# Change: sleep 2 to sleep 3
+# Step 3: Kalau reconnect manual juga lambat/gagal, cek lock file
+# (kemungkinan ada proses lain sedang pegang koneksi Bluetooth)
+cat /tmp/bt_op.lock 2>/dev/null
+ps aux | grep -E "bluetoothctl|sambung_bt|pasang_bt"
 
-# Restart service
-sudo systemctl restart anti-putus.service
+# Step 4: Restart layanan terkait Bluetooth
+sudo systemctl restart bluetooth bluealsa
+sudo systemctl restart bt-boot-connect.service
 ```
 
 **Possible causes:**
@@ -145,6 +155,7 @@ sudo systemctl restart anti-putus.service
 - Power management: Check BIOS for Bluetooth power settings
 - Driver issue: Update Debian packages: `sudo apt upgrade`
 - Overheating: Check server temperature: `sensors`
+- Speaker sudah terhubung ke device lain (HP/laptop lain) — pastikan hanya satu device yang connect ke speaker dalam satu waktu
 
 ---
 
@@ -261,8 +272,9 @@ sudo timedatectl set-timezone Asia/Jakarta
 
 ```bash
 # Increase verbosity in scripts
-# Edit /home/lenovo/anti_putus.sh
-# Add: set -x  (after #!/bin/bash)
+# Edit /home/lenovo/putar_audio.sh (skrip utama pemutaran audio) atau
+# /home/lenovo/sambung_bt.sh (skrip reconnect Bluetooth)
+# Add: set -x  (setelah baris #!/bin/bash)
 
 # Then monitor with:
 tail -f /var/log/otomasi_audio.log
@@ -272,10 +284,12 @@ tail -f /var/log/otomasi_audio.log
 
 ```bash
 # Memory usage
-ps aux | grep -E "anti_putus|tahrim_daemon|mpv"
+ps aux | grep -E "tahrim_daemon|mpv|sambung_bt|putar_audio"
 
-# CPU usage
-top -p $(pgrep -f anti_putus.sh)
+# CPU usage (tahrim-daemon.service jalan nonstop, jadi ini yang relevan
+# dipantau; bt-boot-connect.service Type=oneshot, cuma jalan sebentar
+# saat boot lalu selesai, jadi tidak ada proses jangka panjang untuk itu)
+top -p $(pgrep -f tahrim_daemon.sh)
 
 # File descriptor usage
 lsof -p $(pgrep -f tahrim_daemon.sh)
@@ -284,25 +298,31 @@ lsof -p $(pgrep -f tahrim_daemon.sh)
 ### Restart All Services
 
 ```bash
-# Stop all
-sudo systemctl stop anti-putus.service tahrim-daemon.service
+# Stop
+sudo systemctl stop tahrim-daemon.service
 
 # Wait
 sleep 5
 
-# Start all
-sudo systemctl start anti-putus.service tahrim-daemon.service
+# Start
+sudo systemctl start tahrim-daemon.service
+
+# Reconnect Bluetooth sekali (bt-boot-connect.service Type=oneshot,
+# tidak perlu di-stop/start seperti service nonstop)
+sudo systemctl restart bt-boot-connect.service
 
 # Verify
-sudo systemctl status anti-putus.service tahrim-daemon.service
+sudo systemctl status tahrim-daemon.service
+sudo systemctl is-failed bt-boot-connect.service   # harus "active" = tidak gagal
 ```
 
 ### Emergency Rollback
 
 ```bash
 # Stop services
-sudo systemctl stop anti-putus.service tahrim-daemon.service
-sudo systemctl disable anti-putus.service tahrim-daemon.service
+sudo systemctl stop tahrim-daemon.service
+sudo systemctl disable tahrim-daemon.service
+sudo systemctl disable bt-boot-connect.service
 
 # Remove sudo entry
 sudo rm -f /etc/sudoers.d/otomasi-audio
@@ -321,17 +341,19 @@ If issue persists:
    ```bash
    /home/lenovo/cek_kesehatan.sh > debug.txt
    tail -100 /var/log/otomasi_audio.log >> debug.txt
-   sudo systemctl status anti-putus.service >> debug.txt
+   sudo systemctl status tahrim-daemon.service >> debug.txt
+   sudo systemctl status bt-boot-connect.service >> debug.txt
    ```
 
 2. **Search documentation:**
    - Check [README.md](README.md)
    - Check [DEPLOYMENT.md](DEPLOYMENT.md)
    - Check [SECURITY.md](SECURITY.md)
+   - Check [docs/Manual-Book-Sistem-Bel-Sekolah.md](docs/Manual-Book-Sistem-Bel-Sekolah.md)
 
 3. **Open issue on GitHub** with debug info
 
 ---
 
-**Last Updated:** 2025-07-05  
+**Last Updated:** 2026-07-10 (V14)
 **Maintained By:** Saroppudin (@saroppudin)

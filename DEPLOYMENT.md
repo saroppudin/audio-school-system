@@ -100,14 +100,10 @@ cd /opt/audio-school
 
 ### Step 2: Edit Configuration
 
-```bash
-# Edit config file
-sudo nano config/sekolah.conf.example
+Edit variabel konfigurasi **langsung di dalam** `scripts/Installer-bel-v13.sh` (bagian "1. KONFIGURASI SEKOLAH" di awal file) — bukan di `config/sekolah.conf.example` (file itu cuma contoh referensi format):
 
-# Or copy and edit locally
-cp config/sekolah.conf.example sekolah.conf.local
-nano sekolah.conf.local
-sudo cp sekolah.conf.local /opt/audio-school/config/sekolah.conf
+```bash
+sudo nano scripts/Installer-bel-v13.sh
 ```
 
 **Key parameters to edit:**
@@ -123,22 +119,29 @@ MAC_SPEAKER="XX:XX:XX:XX:XX:XX"         # From pairing step
 
 ```bash
 # Run installer dengan verbose output
-sudo bash scripts/Installer-bel-v4-fixed-improved.sh 2>&1 | tee install.log
+sudo bash scripts/Installer-bel-v13.sh 2>&1 | tee install.log
 
 # Monitor installation (in another terminal)
 tail -f install.log
 ```
 
-**Expected output:**
+**Expected output (V14):**
 ```
 ====================================================
- Memulai Instalasi Otomatisasi Audio V4 IMPROVED
+ Memulai Instalasi Otomatisasi Audio V14
 ====================================================
 [INFO] Validasi pre-instalasi...
-[INFO] [1/9] Menginstal paket dependensi Debian...
-...
-[8/9] Konfigurasi cron jobs...
-[9/9] Verifikasi akhir dan ringkasan instalasi...
+[1/9] Menginstal paket pendukung Debian...
+[2/9] Mengonfigurasi adapter Bluetooth agar auto-enable saat boot...
+[3/9] Mengonfigurasi BlueALSA (mode A2DP Source - PC sebagai pengirim audio)...
+[4/9] Mengunci PCM ALSA 'bluealsa' ke speaker (XX:XX:XX:XX:XX:XX)...
+[5/9] Mencoba memasangkan (pairing) ke speaker XX:XX:XX:XX:XX:XX...
+[6/9] Membuat struktur folder dan file konfigurasi...
+[7/9] Membuat berkas skrip operasional audio...
+[8/9] Daftarkan skrip ke Systemd Service...
+[8b/9] Mengonfigurasi Logrotate global...
+[8c/9] Mendaftarkan jadwal harian tetap di Crontab...
+[9/9] Verifikasi akhir & ringkasan instalasi...
 
 ====================================================
   INSTALASI SELESAI - SMK Negeri Purworejo
@@ -147,7 +150,10 @@ tail -f install.log
 ✓ User Operasional  : lenovo
 ✓ Bluetooth Adapter : Terdeteksi
 ✓ Speaker Target    : XX:XX:XX:XX:XX:XX
+ Service aktif      : tahrim-daemon.service (nonstop), bt-boot-connect.service (oneshot saat boot)
 ```
+
+> **Catatan V14:** tidak ada lagi `anti-putus.service` di daftar service. Reconnect Bluetooth sekarang ditangani `bt-boot-connect.service` (jalan sekali saat boot) + `sambung_bt.sh` (on-demand sebelum tiap bel).
 
 ### Step 4: Upload Audio Files
 
@@ -176,10 +182,14 @@ ssh lenovo@<server-ip> 'ls -la /home/lenovo/audio/ | head -20'
 ### 1. Service Status Check
 
 ```bash
-sudo systemctl status anti-putus.service
 sudo systemctl status tahrim-daemon.service
+# Should show: active (running)
 
-# Both should show: active (running)
+sudo systemctl status bt-boot-connect.service
+# WAJAR kalau statusnya "inactive (dead)" -- ini Type=oneshot, jalan
+# sekali saat boot lalu selesai. Yang penting cek TIDAK gagal:
+sudo systemctl is-failed bt-boot-connect.service
+# Harus keluar: active (artinya tidak failed)
 ```
 
 ### 2. Health Check
@@ -248,11 +258,23 @@ TEST_TIME=$(date -d "+1 minute" +%H:%M)
 
 ```bash
 # Disconnect Bluetooth speaker manually
-# Wait 30 seconds
-# Service should auto-reconnect
+# Wait, lalu trigger satu playback manual (V14 reconnect terjadi
+# on-demand sebelum play, BUKAN otomatis tiap saat seperti versi lama)
+/home/lenovo/putar_audio.sh test "Test Reconnect" /home/lenovo/audio/test.mp3
 
-# Verify in log:
-grep "RECOVERY\|SUCCESS" /var/log/otomasi_audio.log | tail -5
+# Verify di log:
+grep "PLAY\|SUCCESS" /var/log/otomasi_audio.log | tail -5
+```
+
+### 4. Reboot Test (khusus V14 — PENTING)
+
+```bash
+# Test paling penting untuk memastikan bt-boot-connect.service bekerja
+sudo reboot
+
+# Setelah nyala lagi, tunggu ~1 menit, TANPA melakukan apapun manual:
+bluetoothctl info <MAC_SPEAKER> | grep Connected
+# Harus: Connected: yes (reconnect otomatis dari bt-boot-connect.service)
 ```
 
 ---
@@ -265,9 +287,8 @@ grep "RECOVERY\|SUCCESS" /var/log/otomasi_audio.log | tail -5
 # [ ] All health checks passing
 # [ ] Audio files complete & correct
 # [ ] Cron jobs configured
-# [ ] Bluetooth stable for 10+ minutes
+# [ ] Bluetooth reconnect setelah reboot berhasil (lihat Testing Phase #4)
 # [ ] Logs clean (no errors)
-# [ ] Backup working (manual test)
 ```
 
 ### 2. Go-Live Procedure
@@ -291,7 +312,7 @@ tail -f /var/log/otomasi_audio.log
 ## Troubleshooting During Deployment
 
 ### Issue: Installation hangs at [2/9]
-**Cause:** Bluetooth adapter not detected  
+**Cause:** Bluetooth adapter not detected
 **Fix:**
 ```bash
 bluetoothctl list
@@ -299,7 +320,7 @@ bluetoothctl list
 ```
 
 ### Issue: Installer fails at sudoers validation
-**Cause:** Syntax error in sudoers file  
+**Cause:** Syntax error in sudoers file
 **Fix:**
 ```bash
 sudo visudo -c
@@ -308,7 +329,7 @@ sudo rm -f /etc/sudoers.d/otomasi-audio
 ```
 
 ### Issue: Audio not playing after installation
-**Cause:** Audio files missing or wrong path  
+**Cause:** Audio files missing or wrong path
 **Fix:**
 ```bash
 ls -la /home/lenovo/audio/ | head -20
@@ -318,5 +339,5 @@ mpv /home/lenovo/audio/test.mp3
 
 ---
 
-**Estimated Total Deployment Time:** 30-45 minutes  
-**Last Updated:** 2025-07-05
+**Estimated Total Deployment Time:** 30-45 minutes
+**Last Updated:** 2026-07-10 (V14)

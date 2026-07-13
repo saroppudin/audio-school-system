@@ -122,6 +122,16 @@
 #      skrip tiap kali menambah bel harian baru.
 #  23. 'hari_biasa' juga diperluas: sekarang menghidupkan SEMUA kunci
 #      bel harian (bukan cuma 3 yang lama) secara dinamis.
+#
+# TAMBAHAN VERSION 14 (hapus penjaga koneksi 24 jam, sesuai kebutuhan lapangan):
+#  25. anti-putus.service (loop 24 jam + silent keep-alive audio) DIHAPUS.
+#      Speaker BT-MAX terbukti tidak butuh keep-alive untuk tetap
+#      terhubung, dan proses silent-audio yang jalan terus-menerus itu
+#      justru jadi sumber race condition "Device or resource busy" saat
+#      mpv mau main. Diganti bt-boot-connect.service (Type=oneshot) yang
+#      cuma jalan SEKALI saat boot untuk reconnect otomatis kalau listrik
+#      sempat padam/reboot. Reconnect harian tetap ditangani sambung_bt.sh
+#      yang sudah dipanggil putar_audio.sh sebelum tiap bel (tidak berubah).
 #  24. 'liburan' juga diperluas: mematikan SEMUA kunci bel harian
 #      (termasuk bel custom baru) secara dinamis, hanya Tarhim yang aktif.
 # ====================================================================
@@ -135,7 +145,7 @@ USER_SISTEM="lenovo"                   # Nama user non-root di Debian
 NAMA_SEKOLAH="SMK Nurussalaf Kemiri"   # Nama Sekolah Anda
 GARIS_LINTANG="-7.7134"                # Koordinat Lintang Sekolah
 GARIS_BUJUR="109.9961"                 # Koordinat Bujur Sekolah
-MAC_SPEAKER="7d:5b:22:c8:4d:ab"        # MAC Address Mixer/Speaker Bluetooth
+MAC_SPEAKER="16:3E:E3:5F:EF:E5"        # MAC Address Mixer/Speaker Bluetooth
 
 # Jalur Direktori (Otomatis menyesuaikan dengan USER_SISTEM)
 DIR_BASE="/home/${USER_SISTEM}"
@@ -165,7 +175,7 @@ if ! [[ "$GARIS_LINTANG" =~ ^-?[0-9]+\.?[0-9]*$ ]] || ! [[ "$GARIS_BUJUR" =~ ^-?
 fi
 
 if ! [[ "$MAC_SPEAKER" =~ ^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$ ]]; then
-    echo "[ERROR] Format MAC_SPEAKER tidak valid. Contoh format yang benar: 7d:5b:22:c8:4d:ab"
+    echo "[ERROR] Format MAC_SPEAKER tidak valid. Contoh format yang benar: 16:3E:E3:5F:EF:E5"
     exit 1
 fi
 MAC_SPEAKER_LOWER=$(echo "$MAC_SPEAKER" | tr 'A-F' 'a-f')
@@ -316,14 +326,8 @@ sleep 2
 echo "[4/9] Mengunci PCM ALSA 'bluealsa' ke speaker (${MAC_SPEAKER})..."
 [ -f /etc/asound.conf ] && cp /etc/asound.conf /etc/asound.conf.bak.$(date +%s)
 cat <<EOF > /etc/asound.conf
-pcm.bluealsa {
-    type bluealsa
-    device "${MAC_SPEAKER}"
-    profile "a2dp"
-}
-ctl.bluealsa {
-    type bluealsa
-}
+defaults.bluealsa.device "${MAC_SPEAKER}"
+defaults.bluealsa.profile "a2dp"
 EOF
 
 # PERBAIKAN (BARU): PAIRING otomatis ke speaker. Ini yang HILANG di V4
@@ -365,8 +369,8 @@ SUDOERS_FILE="/etc/sudoers.d/otomasi-audio-rfkill"
 SUDOERS_TMP="$(mktemp)"
 cat <<EOF > "$SUDOERS_TMP"
 ${USER_SISTEM} ALL=(ALL) NOPASSWD: /usr/sbin/rfkill
-${USER_SISTEM} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart anti-putus.service
 ${USER_SISTEM} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart tahrim-daemon.service
+${USER_SISTEM} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart bt-boot-connect.service
 ${USER_SISTEM} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart bluetooth
 ${USER_SISTEM} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart bluealsa
 ${USER_SISTEM} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart bluetooth bluealsa
@@ -489,6 +493,12 @@ echo "Pastikan speaker/mixer SEDANG dalam mode pairing (lampu berkedip),"
 echo "lalu tekan Enter untuk melanjutkan..."
 read -r _
 
+# PERBAIKAN: lock bersama dengan sambung_bt.sh supaya pairing manual ini
+# tidak tabrakan dengan proses reconnect otomatis saat jadwal bel tiba.
+echo "Menunggu akses adapter Bluetooth (siapa tahu sedang dipakai proses otomatis)..."
+exec 202>/tmp/bt_op.lock
+flock -w 30 202 || echo "[PERINGATAN] Timeout menunggu lock, lanjut saja."
+
 sudo rfkill unblock bluetooth
 bluetoothctl power on
 bluetoothctl agent NoInputNoOutput
@@ -515,6 +525,14 @@ cat <<'EOF' > ${DIR_BASE}/sambung_bt.sh
 DIR_SKRIP="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${DIR_SKRIP}/sekolah.conf"
 GAGAL_FILE="${DIR_BASE}/.gagal_beruntun"
+
+# PERBAIKAN: lock bersama dengan pasang_bt.sh supaya dua proses tidak
+# pernah memanggil bluetoothctl connect/pair secara bersamaan (mencegah
+# "org.bluez.Error.InProgress: br-connection-busy").
+exec 202>/tmp/bt_op.lock
+if ! flock -w 20 202; then
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - [WARNING] - Lock Bluetooth timeout (sedang dipakai proses lain), lanjut tanpa lock." >> "$LOG_FILE"
+fi
 
 if bluetoothctl info "$MAC_SPEAKER" | grep -q "Connected: yes"; then
     echo 0 > "$GAGAL_FILE"
@@ -571,37 +589,14 @@ if [ "$GAGAL_KE" -ge 3 ]; then
 fi
 EOF
 
-# Skrip anti_putus.sh
-cat <<'EOF' > ${DIR_BASE}/anti_putus.sh
-#!/bin/bash
-DIR_SKRIP="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${DIR_SKRIP}/sekolah.conf"
-HENING_PID=""
-while true; do
-    # PERBAIKAN: hanya jaga koneksi kalau memang sedang terhubung,
-    # supaya tidak spam proses aplay yang gagal terus-menerus saat
-    # speaker sedang putus (menunggu bel berikutnya reconnect).
-    if bluetoothctl info "$MAC_SPEAKER" | grep -q "Connected: yes"; then
-        if pgrep -x "mpv" > /dev/null; then
-            if [ -n "$HENING_PID" ] && kill -0 "$HENING_PID" 2>/dev/null; then
-                kill "$HENING_PID" 2>/dev/null
-                HENING_PID=""
-            fi
-        else
-            if [ -z "$HENING_PID" ] || ! kill -0 "$HENING_PID" 2>/dev/null; then
-                aplay -q -D bluealsa -f cd -t raw /dev/zero > /dev/null 2>&1 &
-                HENING_PID=$!
-            fi
-        fi
-    else
-        if [ -n "$HENING_PID" ] && kill -0 "$HENING_PID" 2>/dev/null; then
-            kill "$HENING_PID" 2>/dev/null
-            HENING_PID=""
-        fi
-    fi
-    sleep 2
-done
-EOF
+# PERBAIKAN (V14): anti_putus.sh (loop 24 jam + silent keep-alive) DIHAPUS.
+# BT-MAX terbukti tidak butuh keep-alive untuk tetap terhubung, dan proses
+# aplay /dev/zero yang jalan terus-menerus justru jadi sumber race condition
+# "Device or resource busy" saat mpv mau main. Reconnect sekarang cukup:
+#   1. Sekali saat boot (bt-boot-connect.service, Type=oneshot) -- untuk
+#      kasus setelah mati listrik/reboot.
+#   2. On-demand oleh sambung_bt.sh, dipanggil putar_audio.sh tiap kali
+#      ada bel yang akan diputar (sudah ada sejak V6, tidak berubah).
 
 # Skrip putar_audio.sh
 cat <<'EOF' > ${DIR_BASE}/putar_audio.sh
@@ -638,7 +633,29 @@ amixer -q sset Master 100% 2>/dev/null
 
 DAFTAR=$(printf '%s, ' "${FILES[@]##*/}")
 echo "$(date '+%Y-%m-%d %H:%M:%S') - [PLAY] - Memutar $NAMA: ${DAFTAR%, } (Volume 80%)" >> "$LOG_FILE"
-mpv --no-video --audio-device=alsa/bluealsa --volume=80 --audio-fallback-to-ids=no --audio-delay=1.5 "${FILES[@]}" >> "$LOG_FILE" 2>&1
+
+# PERBAIKAN (jaga-jaga): lepas paksa sisa proses aplay -D bluealsa kalau
+# ada, sebelum mpv coba membuka PCM yang sama (mencegah "Device or
+# resource busy"). Sejak V14 sudah jarang terjadi karena anti_putus.sh
+# (loop silent keep-alive) sudah dihapus, tapi baris ini aman dibiarkan
+# sebagai pengaman tambahan tanpa efek samping.
+pkill -f "aplay -q -D bluealsa" 2>/dev/null
+sleep 0.3
+
+# PERBAIKAN (V14): --audio-fallback-to-ids BUKAN opsi valid di mpv (lihat
+# `mpv --list-options`), menyebabkan mpv Fatal Error dan TIDAK PERNAH
+# main audio apapun. Opsi ini dihapus total.
+mpv --no-video --audio-device=alsa/bluealsa --volume=80 --audio-delay=1.5 "${FILES[@]}" >> "$LOG_FILE" 2>&1
+MPV_EXIT=$?
+
+# PERBAIKAN: catat baris log jelas SUKSES/GAGAL setelah playback selesai,
+# lengkap dengan jam selesai dan nama bel -- supaya mudah dicari lewat
+# grep tanpa perlu menebak dari banyak baris debug bluealsa-pcm.
+if [ "$MPV_EXIT" -eq 0 ]; then
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - [SUKSES] - $NAMA berhasil diputar (selesai jam $(date '+%H:%M'))." >> "$LOG_FILE"
+else
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - [GAGAL] - $NAMA GAGAL diputar (mpv exit code ${MPV_EXIT}). Cek koneksi Bluetooth/speaker!" >> "$LOG_FILE"
+fi
 EOF
 
 # Skrip cek_ujian.sh
@@ -736,8 +753,19 @@ ambil_jadwal() {
 }
 
 while true; do
+    # PERBAIKAN: TUNGGU NTP sinkron dulu (maks 2 menit) sebelum
+    # menghitung jadwal hari ini. Kalau tidak, jam sistem yang belum
+    # sinkron (umum terjadi tepat setelah boot/mati listrik) bikin
+    # perhitungan sleep meleset puluhan menit begitu NTP membetulkan
+    # jam belakangan (sleep tidak ikut ter-koreksi, jadi target waktu
+    # nyata jadi geser sebesar koreksi NTP tsb).
+    TUNGGU_NTP=0
+    while ! timedatectl show -p NTPSynchronized --value | grep -q "yes" && [ "$TUNGGU_NTP" -lt 120 ]; do
+        sleep 5
+        TUNGGU_NTP=$((TUNGGU_NTP + 5))
+    done
     if ! timedatectl show -p NTPSynchronized --value | grep -q "yes"; then
-        echo "$(date '+%Y-%m-%d %H:%M:%S') - [WARNING] - Jam sistem belum tersinkron NTP." >> "$LOG_FILE"
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - [WARNING] - Jam sistem belum tersinkron NTP setelah menunggu ${TUNGGU_NTP} detik. Melanjutkan dengan jam sistem apa adanya (risiko jadwal meleset kalau NTP baru sinkron belakangan)." >> "$LOG_FILE"
     fi
 
     TANGGAL_HARI_INI=$(date +%d-%m-%Y)
@@ -1059,10 +1087,40 @@ status_sistem() {
     echo "===================================================="
     echo " STATUS MODE AUDIO OPERASIONAL SEKOLAH"
     echo "===================================================="
-    local daftar_kunci
-    daftar_kunci=$( { daftar_kunci_harian; printf "ujian\ntarhim_subuh\ntarhim_maghrib\n"; } | awk '!seen[$0]++')
-    for fitur in $daftar_kunci; do
-        [ -z "$fitur" ] && continue
+
+    # PERBAIKAN: lagu_pagi, indonesia_raya, & bel_dzuhur tetap tampil
+    # sendiri-sendiri. HANYA bel custom yang ditambahkan lewat
+    # kelola_harian.sh (mis. bel_0021_0915, dst) yang digabung jadi
+    # satu baris ringkasan "Bel harian" supaya status tidak dipenuhi
+    # puluhan baris kunci teknis satu-satu.
+    for fitur in lagu_pagi indonesia_raya bel_dzuhur; do
+        if [ -f "${DIR_FLAG}/${fitur}.off" ]; then
+            printf "  %-15s : [ OFF ] NONAKTIF\n" "$fitur"
+        else
+            printf "  %-15s : [ ON  ] AKTIF NORMAL\n" "$fitur"
+        fi
+    done
+
+    local total=0 aktif=0
+    for k in $(daftar_kunci_harian); do
+        case "$k" in
+            lagu_pagi|indonesia_raya|bel_dzuhur) continue ;;
+        esac
+        [ -z "$k" ] && continue
+        total=$((total+1))
+        [ -f "${DIR_FLAG}/${k}.off" ] || aktif=$((aktif+1))
+    done
+    if [ "$total" -gt 0 ]; then
+        if [ "$aktif" -eq "$total" ]; then
+            printf "  %-15s : [ ON  ] AKTIF NORMAL (%d bel)\n" "Bel harian" "$total"
+        elif [ "$aktif" -eq 0 ]; then
+            printf "  %-15s : [ OFF ] NONAKTIF (%d bel)\n" "Bel harian" "$total"
+        else
+            printf "  %-15s : [ SEBAGIAN ] %d dari %d bel aktif\n" "Bel harian" "$aktif" "$total"
+        fi
+    fi
+
+    for fitur in ujian tarhim_subuh tarhim_maghrib; do
         if [ -f "${DIR_FLAG}/${fitur}.off" ]; then
             printf "  %-15s : [ OFF ] NONAKTIF\n" "$fitur"
         else
@@ -1126,7 +1184,9 @@ cat <<'EOF' > ${DIR_BASE}/cek_kesehatan.sh
 DIR_SKRIP="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${DIR_SKRIP}/sekolah.conf"
 echo "=== STATUS SERVER: ${NAMA_SEKOLAH} ==="
-systemctl is-active anti-putus.service tahrim-daemon.service
+systemctl is-active tahrim-daemon.service
+echo -n "bt-boot-connect.service (oneshot, wajar kalau 'inactive' setelah sukses jalan sekali saat boot): "
+systemctl is-failed bt-boot-connect.service >/dev/null 2>&1 && echo "GAGAL, cek: journalctl -u bt-boot-connect.service" || echo "OK"
 echo -e "\n=== 10 LOG CRITICAL/WARNING TERAKHIR ==="
 grep -E "CRITICAL|WARNING" "$LOG_FILE" 2>/dev/null | tail -10 || echo "(tidak ada / log belum ada)"
 echo -e "\n=== KONEKSI BLUETOOTH ==="
@@ -1157,7 +1217,7 @@ cat <<'EOF' > ${DIR_BASE}/cek_service.sh
 #!/bin/bash
 DIR_SKRIP="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${DIR_SKRIP}/sekolah.conf"
-for SVC in anti-putus.service tahrim-daemon.service; do
+for SVC in tahrim-daemon.service; do
     if ! systemctl is-active --quiet "$SVC"; then
         echo "$(date '+%Y-%m-%d %H:%M:%S') - [CRITICAL] - Watchdog: $SVC TIDAK AKTIF. Mencoba restart..." >> "$LOG_FILE"
         sudo systemctl restart "$SVC" 2>>"$LOG_FILE"
@@ -1197,22 +1257,24 @@ echo "[8/9] Daftarkan skrip ke Systemd Service..."
 # benar-benar gagal berulang kali (bukan sekadar Restart=always biasa),
 # systemd akan memicu otomasi-audio-alert@.service yang mencatatnya
 # sebagai CRITICAL ke log -- bukan cuma diam-diam mencoba restart terus.
-cat <<EOF > /etc/systemd/system/anti-putus.service
+# PERBAIKAN (V14): anti-putus.service (loop 24 jam) diganti jadi
+# bt-boot-connect.service -- Type=oneshot, jalan SEKALI saat boot untuk
+# reconnect otomatis setelah mati listrik/reboot, lalu selesai (tidak
+# ada proses yang jalan terus-menerus). Reconnect harian tetap ditangani
+# sambung_bt.sh yang dipanggil putar_audio.sh sebelum tiap bel.
+cat <<EOF > /etc/systemd/system/bt-boot-connect.service
 [Unit]
-Description=Penjaga Koneksi Bluetooth Mixer Audio Sekolah
+Description=Reconnect Bluetooth Speaker Sekolah Saat Boot (sekali jalan)
 After=bluetooth.target bluealsa.service network.target
 Wants=bluealsa.service
 OnFailure=otomasi-audio-alert@%n.service
-StartLimitIntervalSec=300
-StartLimitBurst=10
 
 [Service]
-Type=simple
-ExecStartPre=/bin/sleep 5
-ExecStart=${DIR_BASE}/anti_putus.sh
-Restart=always
-RestartSec=5
+Type=oneshot
+ExecStartPre=/bin/sleep 10
+ExecStart=${DIR_BASE}/sambung_bt.sh
 User=${USER_SISTEM}
+RemainAfterExit=no
 
 [Install]
 WantedBy=multi-user.target
@@ -1252,7 +1314,8 @@ User=${USER_SISTEM}
 EOF
 
 jalankan "Reload daemon systemd (service utama)" systemctl daemon-reload
-jalankan "Aktifkan anti-putus.service" systemctl enable --now anti-putus.service
+jalankan "Aktifkan bt-boot-connect.service (oneshot, boot saja)" systemctl enable bt-boot-connect.service
+jalankan "Jalankan bt-boot-connect.service sekarang (reconnect awal)" systemctl start bt-boot-connect.service
 jalankan "Aktifkan tahrim-daemon.service" systemctl enable --now tahrim-daemon.service
 
 # --------------------------------------------------------------------
@@ -1324,7 +1387,7 @@ bluetoothctl info "$MAC_SPEAKER" | grep -q "Connected: yes" && STATUS_CONNECTED=
 echo "===================================================="
 echo " INSTALASI SELESAI - ${NAMA_SEKOLAH}"
 echo "===================================================="
-echo " Service aktif   : anti-putus.service, tahrim-daemon.service"
+echo " Service aktif   : tahrim-daemon.service (nonstop), bt-boot-connect.service (oneshot saat boot)"
 echo " Folder utama    : ${DIR_BASE}"
 echo " Folder audio    : ${DIR_AUDIO}"
 echo " Log sistem      : ${LOG_FILE}"
@@ -1355,10 +1418,12 @@ echo "  3. Cek status sistem  : ${DIR_BASE}/cek_kesehatan.sh"
 echo "  4. Atur jadwal ujian  : ${DIR_BASE}/kelola_ujian.sh"
 echo "  5. Atur mode sekolah  : ${DIR_BASE}/mode_sekolah.sh"
 echo "----------------------------------------------------"
-echo " Catatan V7:"
+echo " Catatan V14:"
 echo "  - Output audio HANYA lewat Bluetooth speaker (tidak ada"
-echo "    fallback ke audio lokal). anti-putus.service menjaga koneksi"
-echo "    tetap hidup nonstop supaya bel tidak pernah bisu."
+echo "    fallback ke audio lokal)."
+echo "  - TIDAK ADA LAGI penjaga koneksi 24 jam. Reconnect otomatis"
+echo "    terjadi: (1) sekali saat boot lewat bt-boot-connect.service,"
+echo "    dan (2) on-demand oleh sambung_bt.sh sebelum tiap bel diputar."
 echo "  - Watchdog cek_service.sh berjalan tiap 5 menit lewat cron"
-echo "    untuk memastikan kedua service utama tetap hidup."
+echo "    untuk memastikan tahrim-daemon.service tetap hidup."
 echo "===================================================="

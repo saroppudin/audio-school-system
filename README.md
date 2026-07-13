@@ -1,9 +1,9 @@
 # 🔔 Audio Automation System untuk Sekolah
 ## Multi-Audio Bell, Exam Scheduler & Prayer Time (Tahrim) Daemon
 
-**Version:** 4.0 (Production-Ready)  
-**Target OS:** Debian 13 Headless  
-**Status:** ✅ Production Ready  
+**Version:** V14 (Production-Ready)
+**Target OS:** Debian 13 Headless
+**Status:** ✅ Production Ready
 
 ---
 
@@ -13,7 +13,8 @@
 - Lagu pagi (Senin-Sabtu, 06:30)
 - Indonesia Raya (Senin-Jum'at & Sabtu, 09:59)
 - Bel Dzuhur (Senin-Jum'at & Sabtu, 11:55)
-- Penjadwalan fleksibel via cron
+- Penjadwalan fleksibel via cron, bisa tambah bel custom tanpa batas
+  (lihat [Manual Book](docs/Manual-Book-Sistem-Bel-Sekolah.md) bagian 8.1)
 
 ✅ **Manajemen Ujian**
 - Jadwal ujian dinamis
@@ -27,9 +28,9 @@
 - DST-aware scheduling
 
 ✅ **Bluetooth Audio**
-- Auto-connect ke speaker Bluetooth
-- Dead air stream untuk maintain koneksi
-- Auto-recovery jika disconnect
+- Auto-connect ke speaker Bluetooth saat boot (`bt-boot-connect.service`, sekali jalan)
+- Reconnect on-demand sebelum tiap bel diputar (`sambung_bt.sh`)
+- Lock file bersama mencegah dua proses Bluetooth bentrok
 - Volume management
 
 ✅ **Reliability & Monitoring**
@@ -55,7 +56,7 @@
 # Debian 13 headless, fresh install
 # User: non-root (default: lenovo)
 # Root access (sudo)
-# Bluetooth adapter + Speaker Bluetooth
+# Bluetooth adapter + Speaker Bluetooth (profil A2DP)
 # Internet connection
 ```
 
@@ -66,12 +67,13 @@
 sudo git clone https://github.com/saroppudin/audio-school-system /opt/audio-school
 cd /opt/audio-school
 
-# 2. Edit konfigurasi
-sudo nano config/sekolah.conf.example
-# Copy ke sekolah.conf dan sesuaikan: NAMA_SEKOLAH, GARIS_LINTANG, GARIS_BUJUR, MAC_SPEAKER
+# 2. Edit konfigurasi LANGSUNG di installer (bagian "1. KONFIGURASI SEKOLAH")
+sudo nano scripts/Installer-bel-v13.sh
+# Sesuaikan: USER_SISTEM, NAMA_SEKOLAH, GARIS_LINTANG, GARIS_BUJUR, MAC_SPEAKER
+# (config/sekolah.conf.example hanya referensi format, bukan yang dibaca installer)
 
 # 3. Jalankan installer
-sudo bash scripts/Installer-bel-v4-fixed-improved.sh
+sudo bash scripts/Installer-bel-v13.sh
 
 # 4. Upload file audio MP3
 scp audio/*.mp3 lenovo@server:/home/lenovo/audio/
@@ -80,6 +82,8 @@ scp audio/*.mp3 lenovo@server:/home/lenovo/audio/
 ssh lenovo@server
 /home/lenovo/cek_kesehatan.sh
 ```
+
+Panduan lengkap langkah demi langkah (termasuk troubleshooting nyata yang pernah ditemukan): [Manual Book](docs/Manual-Book-Sistem-Bel-Sekolah.md).
 
 ---
 
@@ -93,17 +97,18 @@ audio-school-system/
 ├── TROUBLESHOOTING.md                 # Troubleshooting guide
 │
 ├── scripts/
-│   └── Installer-bel-v4-fixed-improved.sh    # Main installer (COMPREHENSIVE)
+│   └── Installer-bel-v13.sh           # Main installer (COMPREHENSIVE, V14)
 │
 ├── config/
-│   └── sekolah.conf.example           # Configuration template
+│   └── sekolah.conf.example           # Configuration template (referensi format saja)
 │
 ├── audio/
 │   └── .placeholder                   # Place .mp3 files here
 │
 └── docs/
     ├── API-Integration.md             # Aladhan API details
-    └── Bluetooth-Setup.md             # Bluetooth pairing guide
+    ├── Bluetooth-Setup.md             # Bluetooth pairing guide
+    └── Manual-Book-Sistem-Bel-Sekolah.md   # Panduan instalasi & operasional lengkap
 ```
 
 ---
@@ -114,6 +119,7 @@ audio-school-system/
 ```bash
 /home/lenovo/sekolah.conf
 ```
+(digenerate otomatis oleh installer berdasarkan variabel yang kamu edit di `scripts/Installer-bel-v13.sh`)
 
 ### Parameter yang Dapat Diubah
 
@@ -125,8 +131,9 @@ NAMA_SEKOLAH="SMK Negeri Purworejo"
 GARIS_LINTANG="-7.7134"
 GARIS_BUJUR="109.9961"
 
-# Bluetooth Speaker
-MAC_SPEAKER="7d:5b:22:c8:4d:ab"  # bluetoothctl devices untuk cari
+# Bluetooth Speaker -- GANTI dengan MAC speaker Anda sendiri, cari lewat:
+#   bluetoothctl scan on
+MAC_SPEAKER="XX:XX:XX:XX:XX:XX"
 
 # System User (jangan ubah setelah install)
 USER_SISTEM="lenovo"
@@ -166,18 +173,18 @@ Upload ke `/home/lenovo/audio/`:
 
 ## 🛠️ Perintah Penting
 
-### Management Jadwal Ujian
+### Management Jadwal Bel Harian & Ujian
 ```bash
-# Tambah jadwal
-/home/lenovo/kelola_ujian.sh tambah 07:00 bel-mulai-ujian.mp3
+# Bel harian: tambah/hapus/kosongkan/daftar
+/home/lenovo/kelola_harian.sh tambah 15:00 1-5 bel_pulang Bel-Pulang.mp3
+/home/lenovo/kelola_harian.sh daftar
+/home/lenovo/kelola_harian.sh hapus bel_pulang
+/home/lenovo/kelola_harian.sh kosongkan   # kecuali 3 kunci permanen
 
-# Lihat jadwal
+# Bel ujian: tambah/hapus/kosongkan/daftar
+/home/lenovo/kelola_ujian.sh tambah 07:00 1-5 bel-mulai-ujian.mp3
 /home/lenovo/kelola_ujian.sh daftar
-
-# Hapus jadwal
 /home/lenovo/kelola_ujian.sh hapus 07:00
-
-# Kosongkan semua
 /home/lenovo/kelola_ujian.sh kosongkan
 ```
 
@@ -195,8 +202,16 @@ Upload ke `/home/lenovo/audio/`:
 # Normal semua (all ON)
 /home/lenovo/mode_sekolah.sh normal_semua
 
-# Status
+# Status (bel custom diringkas jadi 1 baris "Bel harian")
 /home/lenovo/mode_sekolah.sh status
+```
+
+### Ganti Speaker Bluetooth
+```bash
+# 1. Edit MAC_SPEAKER di /home/lenovo/sekolah.conf DAN di
+#    defaults.bluealsa.device pada /etc/asound.conf (harus sama)
+# 2. Pairing ulang:
+sudo /home/lenovo/pasang_bt.sh
 ```
 
 ### Monitoring & Debugging
@@ -208,12 +223,12 @@ Upload ke `/home/lenovo/audio/`:
 tail -f /var/log/otomasi_audio.log
 
 # Service status
-systemctl status anti-putus.service
 systemctl status tahrim-daemon.service
+systemctl is-failed bt-boot-connect.service   # oneshot, wajar "inactive" setelah sukses
 
 # Restart service
-sudo systemctl restart anti-putus.service
 sudo systemctl restart tahrim-daemon.service
+sudo systemctl restart bt-boot-connect.service   # reconnect Bluetooth sekali
 
 # View errors
 tail -50 /var/log/otomasi_audio.log | grep ERROR
@@ -224,7 +239,7 @@ tail -50 /var/log/otomasi_audio.log | grep ERROR
 ## 🔒 Security
 
 Sistem ini dilengkapi dengan:
-- ✅ Minimal sudo privileges (hanya rfkill & systemctl)
+- ✅ Minimal sudo privileges (hanya rfkill & systemctl unit tertentu)
 - ✅ Rate limiting untuk API calls (Aladhan)
 - ✅ Audit logging untuk semua operasi
 - ✅ Encrypted backup storage
@@ -282,8 +297,10 @@ bluetoothctl pair <MAC>
 bluetoothctl trust <MAC>
 bluetoothctl connect <MAC>
 
-# 3. Restart service
-sudo systemctl restart anti-putus.service
+# 3. Reconnect via script sistem
+sudo /home/lenovo/sambung_bt.sh
+# atau pairing ulang dari nol:
+sudo /home/lenovo/pasang_bt.sh
 ```
 
 Lihat [TROUBLESHOOTING.md](TROUBLESHOOTING.md) untuk troubleshooting lengkap.
@@ -292,7 +309,20 @@ Lihat [TROUBLESHOOTING.md](TROUBLESHOOTING.md) untuk troubleshooting lengkap.
 
 ## 📝 Changelog
 
-### v4.0 (Production Ready)
+### V14 (Production Ready, terbaru)
+- ✅ **`anti-putus.service` dihapus** (loop 24 jam + silent keep-alive audio,
+  penyebab race condition `Device or resource busy`), diganti
+  `bt-boot-connect.service` (`Type=oneshot`, reconnect sekali saat boot)
+- ✅ `/etc/asound.conf` disederhanakan, hindari bentrok dengan template
+  resmi paket `bluez-alsa` (fix error `Unknown field slave`)
+- ✅ Flag mpv tidak valid (`--audio-fallback-to-ids`) dihapus
+- ✅ Lock file bersama (`flock`) di `sambung_bt.sh` & `pasang_bt.sh`,
+  cegah dua proses Bluetooth connect/pair bersamaan
+- ✅ `mode_sekolah.sh status`: bel custom diringkas jadi satu baris
+  "Bel harian", kunci permanen tetap tampil sendiri-sendiri
+- ✅ Dokumentasi lengkap: [Manual Book](docs/Manual-Book-Sistem-Bel-Sekolah.md)
+
+### v4.0
 - ✅ Comprehensive security hardening
 - ✅ Advanced error handling
 - ✅ DST-aware scheduling
@@ -302,7 +332,6 @@ Lihat [TROUBLESHOOTING.md](TROUBLESHOOTING.md) untuk troubleshooting lengkap.
 - ✅ Production-ready systemd configs
 - ✅ AppArmor-compatible service design
 - ✅ Rate limiting untuk API calls
-- ✅ 24/7 auto-recovery mechanism
 
 ---
 
@@ -315,10 +344,11 @@ Untuk issues atau pertanyaan:
 4. Lihat [DEPLOYMENT.md](DEPLOYMENT.md) untuk deployment guide
 
 ## Dokumentasi
-Lihat [Manual Book](docs/Manual-Book-Sistem-Bel-Sekolah.md) untuk panduan penggunaan harian dan pemeliharaan.
+Lihat [Manual Book](docs/Manual-Book-Sistem-Bel-Sekolah.md) untuk panduan instalasi, operasional harian, dan pemeliharaan lengkap.
 
 ## Versi Terbaru
-Installer versi V13 — lihat changelog lengkap di komentar header `scripts/Installer-bel-v13.sh`.
+Installer versi **V14** (`scripts/Installer-bel-v13.sh`) — lihat changelog lengkap di komentar header file tersebut.
+
 ---
 
 ## 📄 Lisensi
@@ -329,11 +359,11 @@ MIT License - Bebas digunakan untuk tujuan komersial & non-komersial
 
 ## 👨‍💻 Maintainer
 
-Saroppudin (@saroppudin)  
+Saroppudin (@saroppudin)
 GitHub: https://github.com/saroppudin
 
 ---
 
-**Last Updated:** 2025-07-05  
-**Tested On:** Debian 13 Headless, Systemd, BlueALSA  
+**Last Updated:** 2026-07-10
+**Tested On:** Debian 13 Headless, Systemd, BlueALSA
 **Production Ready:** ✅ YES
