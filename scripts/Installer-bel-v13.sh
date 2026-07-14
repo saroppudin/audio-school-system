@@ -405,6 +405,12 @@ LOG_FILE="${LOG_FILE}"
 DB_LOKAL="${DIR_BASE}/jadwal_sholat.json"
 CONF_UJIAN="${DIR_BASE}/jadwal_ujian.conf"
 CONF_HARIAN="${DIR_BASE}/jadwal_harian.conf"
+
+# PERBAIKAN: pilihan output audio -- "bluetooth" (default) atau
+# "line_out" (jack audio analog PC ke amplifier kabel). Ganti dengan
+# ${DIR_BASE}/atur_output_audio.sh, jangan edit manual supaya konsisten.
+AUDIO_OUTPUT="bluetooth"
+AUDIO_DEVICE_LINEOUT="hw:0,0"
 EOF
 
 # MEMBUAT DEFAULT JADWAL BEL UJIAN (Berdasarkan Istirahat Baru V2)
@@ -616,37 +622,64 @@ if [ -f "${DIR_FLAG}/semua.off" ] || [ -f "${DIR_FLAG}/${KUNCI}.off" ]; then
     exit 0
 fi
 
+# PERBAIKAN: pause otomatis bel jam pelajaran hari Senin setelah bel
+# masuk (jam_ke_0_senin), sampai upacara selesai dan admin menjalankan
+# lanjutkan_bel_senin.sh secara manual (durasi upacara suka beda-beda,
+# jadi tidak dijadwalkan otomatis pakai jam tetap).
+case "$KUNCI" in
+    jam_ke_*_senin)
+        if [ -f "${DIR_FLAG}/pause_senin.flag" ]; then
+            echo "$(date '+%Y-%m-%d %H:%M:%S') - [SKIP] - $NAMA di-pause (menunggu upacara Senin selesai, jalankan lanjutkan_bel_senin.sh)." >> "$LOG_FILE"
+            exit 0
+        fi
+        ;;
+esac
+
 for f in "${FILES[@]}"; do
     [ -f "$f" ] || echo "$(date '+%Y-%m-%d %H:%M:%S') - [CRITICAL] - File hilang: $f" >> "$LOG_FILE"
 done
 
-"${DIR_SKRIP}/sambung_bt.sh"
+# PERBAIKAN: pilihan output audio. Kalau "line_out", lewati semua
+# urusan Bluetooth sama sekali (tidak perlu sambung_bt.sh ataupun cek
+# koneksi) dan langsung mainkan lewat jack audio analog PC.
+if [ "$AUDIO_OUTPUT" = "line_out" ]; then
+    MPV_AUDIO_DEVICE="alsa/${AUDIO_DEVICE_LINEOUT}"
+else
+    "${DIR_SKRIP}/sambung_bt.sh"
 
-# Cek betul-betul status koneksi sebelum main, dan catat CRITICAL yang
-# jelas kalau tetap tidak konek (bukan diam-diam gagal). Output audio
-# HANYA lewat Bluetooth (tidak ada fallback ke audio lokal PC).
-if ! bluetoothctl info "$MAC_SPEAKER" | grep -q "Connected: yes"; then
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - [CRITICAL] - $NAMA GAGAL DIPUTAR: Bluetooth speaker tidak terhubung. Cek ${DIR_SKRIP}/pasang_bt.sh" >> "$LOG_FILE"
+    # Cek betul-betul status koneksi sebelum main, dan catat CRITICAL yang
+    # jelas kalau tetap tidak konek (bukan diam-diam gagal). Output audio
+    # HANYA lewat Bluetooth (tidak ada fallback ke audio lokal PC).
+    if ! bluetoothctl info "$MAC_SPEAKER" | grep -q "Connected: yes"; then
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - [CRITICAL] - $NAMA GAGAL DIPUTAR: Bluetooth speaker tidak terhubung. Cek ${DIR_SKRIP}/pasang_bt.sh" >> "$LOG_FILE"
+    fi
+
+    # PERBAIKAN (jaga-jaga): lepas paksa sisa proses aplay -D bluealsa
+    # kalau ada, sebelum mpv coba membuka PCM yang sama.
+    pkill -f "aplay -q -D bluealsa" 2>/dev/null
+    sleep 0.3
+
+    MPV_AUDIO_DEVICE="alsa/bluealsa"
 fi
 
 amixer -q sset Master 100% 2>/dev/null
 
 DAFTAR=$(printf '%s, ' "${FILES[@]##*/}")
-echo "$(date '+%Y-%m-%d %H:%M:%S') - [PLAY] - Memutar $NAMA: ${DAFTAR%, } (Volume 80%)" >> "$LOG_FILE"
-
-# PERBAIKAN (jaga-jaga): lepas paksa sisa proses aplay -D bluealsa kalau
-# ada, sebelum mpv coba membuka PCM yang sama (mencegah "Device or
-# resource busy"). Sejak V14 sudah jarang terjadi karena anti_putus.sh
-# (loop silent keep-alive) sudah dihapus, tapi baris ini aman dibiarkan
-# sebagai pengaman tambahan tanpa efek samping.
-pkill -f "aplay -q -D bluealsa" 2>/dev/null
-sleep 0.3
+echo "$(date '+%Y-%m-%d %H:%M:%S') - [PLAY] - Memutar $NAMA: ${DAFTAR%, } (Volume 80%, output: ${AUDIO_OUTPUT})" >> "$LOG_FILE"
 
 # PERBAIKAN (V14): --audio-fallback-to-ids BUKAN opsi valid di mpv (lihat
 # `mpv --list-options`), menyebabkan mpv Fatal Error dan TIDAK PERNAH
 # main audio apapun. Opsi ini dihapus total.
-mpv --no-video --audio-device=alsa/bluealsa --volume=80 --audio-delay=1.5 "${FILES[@]}" >> "$LOG_FILE" 2>&1
+mpv --no-video --audio-device="${MPV_AUDIO_DEVICE}" --volume=80 --audio-delay=1.5 "${FILES[@]}" >> "$LOG_FILE" 2>&1
 MPV_EXIT=$?
+
+# PERBAIKAN: kalau bel yang baru selesai diputar adalah bel masuk
+# Senin, otomatis pause bel jam pelajaran Senin berikutnya (menunggu
+# upacara selesai).
+if [ "$KUNCI" = "jam_ke_0_senin" ] && [ "$MPV_EXIT" -eq 0 ]; then
+    touch "${DIR_FLAG}/pause_senin.flag"
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - [INFO] - Bel jam pelajaran Senin di-pause otomatis setelah bel masuk (menunggu upacara selesai). Jalankan lanjutkan_bel_senin.sh setelah upacara usai." >> "$LOG_FILE"
+fi
 
 # PERBAIKAN: catat baris log jelas SUKSES/GAGAL setelah playback selesai,
 # lengkap dengan jam selesai dan nama bel -- supaya mudah dicari lewat
@@ -657,6 +690,60 @@ else
     echo "$(date '+%Y-%m-%d %H:%M:%S') - [GAGAL] - $NAMA GAGAL diputar (mpv exit code ${MPV_EXIT}). Cek koneksi Bluetooth/speaker!" >> "$LOG_FILE"
 fi
 EOF
+
+# Skrip lanjutkan_bel_senin.sh
+cat <<'EOF' > ${DIR_BASE}/lanjutkan_bel_senin.sh
+#!/bin/bash
+DIR_SKRIP="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${DIR_SKRIP}/sekolah.conf"
+
+if [ ! -f "${DIR_FLAG}/pause_senin.flag" ]; then
+    echo "Bel Senin memang sedang TIDAK di-pause. Tidak ada yang perlu dilanjutkan."
+    exit 0
+fi
+
+rm -f "${DIR_FLAG}/pause_senin.flag"
+echo "$(date '+%Y-%m-%d %H:%M:%S') - [INFO] - Bel jam pelajaran Senin dilanjutkan kembali (upacara selesai)." >> "$LOG_FILE"
+echo "Bel hari Senin sudah dilanjutkan. Bel jam pelajaran berikutnya akan berbunyi normal sesuai jadwal."
+EOF
+chmod +x ${DIR_BASE}/lanjutkan_bel_senin.sh
+
+# Skrip atur_output_audio.sh
+cat <<'EOF' > ${DIR_BASE}/atur_output_audio.sh
+#!/bin/bash
+DIR_SKRIP="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONF="${DIR_SKRIP}/sekolah.conf"
+source "$CONF"
+
+case "$1" in
+    bluetooth)
+        sed -i 's/^AUDIO_OUTPUT=.*/AUDIO_OUTPUT="bluetooth"/' "$CONF"
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - [INFO] - Output audio diubah ke BLUETOOTH (${MAC_SPEAKER})." >> "$LOG_FILE"
+        echo "Output audio diubah ke: BLUETOOTH (${MAC_SPEAKER})"
+        ;;
+    line_out|lineout)
+        sed -i 's/^AUDIO_OUTPUT=.*/AUDIO_OUTPUT="line_out"/' "$CONF"
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - [INFO] - Output audio diubah ke LINE OUT (${AUDIO_DEVICE_LINEOUT})." >> "$LOG_FILE"
+        echo "Output audio diubah ke: LINE OUT (${AUDIO_DEVICE_LINEOUT})"
+        echo "Pastikan speaker/amplifier sudah tersambung ke jack audio PC."
+        echo "Kalau perlu ganti device ALSA-nya, edit AUDIO_DEVICE_LINEOUT di ${CONF}"
+        echo "(cek nama device yang benar dengan: aplay -l)"
+        ;;
+    status)
+        echo "Output audio saat ini : ${AUDIO_OUTPUT}"
+        if [ "$AUDIO_OUTPUT" = "line_out" ]; then
+            echo "Device ALSA           : ${AUDIO_DEVICE_LINEOUT}"
+        else
+            echo "MAC Speaker Bluetooth : ${MAC_SPEAKER}"
+        fi
+        ;;
+    *)
+        echo "Pemakaian: $0 {bluetooth|line_out|status}"
+        exit 1
+        ;;
+esac
+EOF
+chmod +x ${DIR_BASE}/atur_output_audio.sh
 
 # Skrip cek_ujian.sh
 cat <<'EOF' > ${DIR_BASE}/cek_ujian.sh
