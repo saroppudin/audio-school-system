@@ -7,84 +7,102 @@
 ```bash
 # [ ] Hardware ready
   - [ ] Debian 13 minimal install done
-  - [ ] Bluetooth adapter available & working
-  - [ ] Speaker/mixer device Bluetooth ready
-  - [ ] Network connectivity (Ethernet preferred)
-  - [ ] At least 2GB free disk space
-  - [ ] BIOS/UEFI settings verified
+  - [ ] Bluetooth adapter tersedia & terdeteksi (kalau pakai mode bluetooth)
+  - [ ] Jack audio analog on-board + amplifier kabel siap (kalau pakai mode line_out)
+  - [ ] Speaker/mixer Bluetooth siap dipasangkan (kalau pakai mode bluetooth)
+  - [ ] Network connectivity (Ethernet lebih stabil untuk API jadwal sholat)
+  - [ ] Minimal 2GB free disk space
+  - [ ] BIOS/UEFI settings terverifikasi
 
 # [ ] User & SSH setup
-  - [ ] Non-root user created (default: lenovo)
-  - [ ] SSH key pairs generated
-  - [ ] SSH configured properly
-  - [ ] Firewall configured (UFW recommended)
+  - [ ] Non-root user sudah ada (default: lenovo), masuk grup sudo
+  - [ ] SSH key pairs dibuat
+  - [ ] SSH dikonfigurasi dengan benar
+  - [ ] Firewall dikonfigurasi (UFW disarankan)
 ```
 
-### 2. Hardware Pairing (CRITICAL)
+### 2. Tentukan Output Audio: Bluetooth atau Line Out?
+
+Sistem ini mendukung **dua mode output** — tentukan dulu yang mana yang dipakai
+di lokasi ini, karena langkah persiapan hardware-nya berbeda:
+
+**Kalau pakai Bluetooth** — lanjut ke langkah pairing di bawah.
+
+**Kalau pakai Line Out (jack analog ke amplifier kabel)** — tidak perlu pairing
+Bluetooth sama sekali. Cukup pastikan kabel jack tersambung ke amplifier, lalu
+setelah instalasi jalankan:
+```bash
+sudo /home/lenovo/atur_output_audio.sh line_out
+```
+Kartu suara analog akan terdeteksi otomatis (lewat nama kartu, bukan nomor
+index, jadi tahan reboot). Kalau ada lebih dari satu kartu non-HDMI di sistem,
+sebutkan manual: `atur_output_audio.sh line_out <nama_card>` (lihat nama kartu
+lewat `aplay -l`).
+
+### 3. Hardware Pairing Bluetooth (Kalau Dipakai)
 
 ```bash
 # Pairing Bluetooth speaker SEBELUM instalasi otomasi
 
-# Step 1: Power on speaker
-# Step 2: Make discoverable (usually hold button 3-5 seconds)
+# Step 1: Power on speaker, mode discoverable (biasanya tahan tombol 3-5 detik)
 
-# Step 3: Scan devices
+# Step 2: Scan devices
 bluetoothctl scan on
-# Wait for device name to appear
+# Tunggu nama device muncul
 
-# Step 4: Note MAC address
-# Example output:
+# Step 3: Catat MAC address
+# Contoh output:
 # [CHR] XX:XX:XX:XX:XX:XX  DeviceName
 
-# Step 5: Pair device
+# Step 4: Pair & trust
 bluetoothctl pair XX:XX:XX:XX:XX:XX
-
-# Step 6: Trust device
 bluetoothctl trust XX:XX:XX:XX:XX:XX
 
-# Step 7: Verify connection
+# Step 5: Verifikasi
 bluetoothctl info XX:XX:XX:XX:XX:XX
-# Should show: Connected: yes
+# Harus tertulis: Connected: yes
 
-# ⚠️ SAVE MAC ADDRESS!
-# Will need it for: MAC_SPEAKER in sekolah.conf
+# ⚠️ SIMPAN MAC ADDRESS INI! Dipakai untuk MAC_SPEAKER di installer.
 ```
 
-### 3. Audio Files Preparation
+Kalau proses pairing sulit/gagal, ada skrip interaktif siap pakai setelah
+instalasi: `/home/lenovo/pasang_bt.sh`.
+
+### 4. Audio Files Preparation
 
 ```bash
-# [ ] Collect all required MP3 files
-  - [ ] Lagu Pagi (4 files)
+# [ ] Kumpulkan semua file MP3 yang diperlukan
+  - [ ] Lagu Pagi (4 file)
   - [ ] Indonesia Raya (1 file)
   - [ ] Bel Dzuhur (1 file)
-  - [ ] Bel Ujian (6 files)
-  - [ ] Tarhim (4 files)
+  - [ ] Bel Ujian (6 file)
+  - [ ] Tarhim (4 file)
 
-# [ ] Validate audio files
+# [ ] Validasi file audio
   - Format: MP3, 128-320 kbps
-  - Duration: Check reasonable (not too short/long)
-  - Test play on computer before deployment
+  - Cek durasi wajar (tidak terlalu pendek/panjang)
+  - Test play di komputer sebelum deploy
 
-# [ ] Prepare upload method
-  - [ ] SSH/SCP ready
-  - [ ] Or USB drive (if not networked)
-  - [ ] Or rsync (for large transfers)
+# [ ] Siapkan metode upload
+  - [ ] SSH/SCP siap
+  - [ ] Atau USB drive (kalau tidak networked)
+  - [ ] Atau rsync (untuk transfer besar)
 ```
 
-### 4. Configuration Planning
+### 5. Configuration Planning
 
 ```bash
-# [ ] Gather school information
-  NAMA_SEKOLAH="SMK Negeri Purworejo"
-  GARIS_LINTANG="-7.7134"       # Check Google Maps
+# [ ] Kumpulkan info sekolah
+  NAMA_SEKOLAH="SMK Nurussalaf Kemiri"
+  GARIS_LINTANG="-7.7134"          # Cek Google Maps
   GARIS_BUJUR="109.9961"
-  MAC_SPEAKER="XX:XX:XX:XX:XX:XX"  # From Bluetooth pairing
+  MAC_SPEAKER="XX:XX:XX:XX:XX:XX"  # Dari pairing Bluetooth (isi placeholder kalau pakai line_out saja)
 
-# [ ] Plan schedule
-  - [ ] Morning bell time: __ : __
-  - [ ] Indonesia Raya time: __ : __
-  - [ ] Dzuhur bell time: __ : __
-  - [ ] Exam schedule (if applicable)
+# [ ] Rencanakan jadwal
+  - [ ] Jam lagu pagi: __ : __
+  - [ ] Jam Indonesia Raya: __ : __
+  - [ ] Jam bel Dzuhur: __ : __
+  - [ ] Jadwal ujian (kalau ada)
 ```
 
 ---
@@ -95,84 +113,82 @@ bluetoothctl info XX:XX:XX:XX:XX:XX
 
 ```bash
 sudo git clone https://github.com/saroppudin/audio-school-system /opt/audio-school
-cd /opt/audio-school
+cd /opt/audio-school/scripts
 ```
 
-### Step 2: Edit Configuration
+### Step 2: Edit Konfigurasi LANGSUNG DI DALAM SKRIP INSTALLER
 
-Edit variabel konfigurasi **langsung di dalam** `scripts/Installer-bel-v13.sh` (bagian "1. KONFIGURASI SEKOLAH" di awal file) — bukan di `config/sekolah.conf.example` (file itu cuma contoh referensi format):
+> ⚠️ **Penting:** konfigurasi sekolah **bukan** file template terpisah.
+> Edit langsung bagian "1. KONFIGURASI SEKOLAH" di baris atas
+> `Installer-bel-v15.sh`, sebelum menjalankannya.
 
 ```bash
-sudo nano scripts/Installer-bel-v13.sh
+sudo nano Installer-bel-v15.sh
 ```
 
-**Key parameters to edit:**
+**Parameter yang harus diisi (bagian atas skrip):**
 ```bash
-USER_SISTEM="lenovo"                    # Your non-root user
-NAMA_SEKOLAH="SMK Negeri Purworejo"
+USER_SISTEM="lenovo"                    # User non-root Anda
+NAMA_SEKOLAH="SMK Nurussalaf Kemiri"
 GARIS_LINTANG="-7.7134"
 GARIS_BUJUR="109.9961"
-MAC_SPEAKER="XX:XX:XX:XX:XX:XX"         # From pairing step
+MAC_SPEAKER="XX:XX:XX:XX:XX:XX"         # Dari langkah pairing (wajib format valid, atau instalasi ditolak)
 ```
 
-### Step 3: Run Installer
+### Step 3: Jalankan Installer
 
 ```bash
-# Run installer dengan verbose output
-sudo bash scripts/Installer-bel-v13.sh 2>&1 | tee install.log
+sudo bash Installer-bel-v15.sh 2>&1 | tee install.log
 
-# Monitor installation (in another terminal)
+# Pantau instalasi (di terminal lain)
 tail -f install.log
 ```
 
-**Expected output (V14):**
+**Output yang diharapkan (9 tahap utama):**
 ```
-====================================================
- Memulai Instalasi Otomatisasi Audio V14
-====================================================
-[INFO] Validasi pre-instalasi...
 [1/9] Menginstal paket pendukung Debian...
 [2/9] Mengonfigurasi adapter Bluetooth agar auto-enable saat boot...
-[3/9] Mengonfigurasi BlueALSA (mode A2DP Source - PC sebagai pengirim audio)...
-[4/9] Mengunci PCM ALSA 'bluealsa' ke speaker (XX:XX:XX:XX:XX:XX)...
-[5/9] Mencoba memasangkan (pairing) ke speaker XX:XX:XX:XX:XX:XX...
+[3/9] Mengonfigurasi BlueALSA...
+[4/9] (Pengaturan /etc/asound.conf dilakukan otomatis di akhir instalasi)
+[5/9] Mencoba memasangkan (pairing) ke speaker...
 [6/9] Membuat struktur folder dan file konfigurasi...
 [7/9] Membuat berkas skrip operasional audio...
 [8/9] Daftarkan skrip ke Systemd Service...
 [8b/9] Mengonfigurasi Logrotate global...
 [8c/9] Mendaftarkan jadwal harian tetap di Crontab...
+[8d/9] Menerapkan routing ALSA awal (/etc/asound.conf)...
 [9/9] Verifikasi akhir & ringkasan instalasi...
-
-====================================================
-  INSTALASI SELESAI - SMK Negeri Purworejo
-====================================================
-✓ Sistem Operasi    : Debian 13 Headless
-✓ User Operasional  : lenovo
-✓ Bluetooth Adapter : Terdeteksi
-✓ Speaker Target    : XX:XX:XX:XX:XX:XX
- Service aktif      : tahrim-daemon.service (nonstop), bt-boot-connect.service (oneshot saat boot)
 ```
-
-> **Catatan V14:** tidak ada lagi `anti-putus.service` di daftar service. Reconnect Bluetooth sekarang ditangani `bt-boot-connect.service` (jalan sekali saat boot) + `sambung_bt.sh` (on-demand sebelum tiap bel).
 
 ### Step 4: Upload Audio Files
 
 ```bash
-# Option A: Using SCP (from your computer)
-cd /path/to/audio/files
+# Opsi A: SCP
 scp *.mp3 lenovo@<server-ip>:/home/lenovo/audio/
 
-# Option B: Using rsync (faster for large transfers)
+# Opsi B: rsync (lebih cepat untuk banyak file)
 rsync -avz audio/ lenovo@<server-ip>:/home/lenovo/audio/
 
-# Option C: Using SSH + tar (if network unreliable)
+# Opsi C: tar via SSH (kalau network tidak stabil)
 tar -czf audio.tar.gz *.mp3
-ssh lenovo@<server-ip> 'mkdir -p /home/lenovo/audio'
 scp audio.tar.gz lenovo@<server-ip>:/tmp/
-ssh lenovo@<server-ip> 'tar -xzf /tmp/audio.tar.gz -C /home/lenovo/audio'
+ssh lenovo@<server-ip> 'mkdir -p /home/lenovo/audio && tar -xzf /tmp/audio.tar.gz -C /home/lenovo/audio'
 
-# Verify upload
+# Verifikasi
 ssh lenovo@<server-ip> 'ls -la /home/lenovo/audio/ | head -20'
+```
+
+### Step 5: Tentukan & Kunci Output Audio
+
+```bash
+# Kalau default (bluetooth) sudah sesuai, tidak perlu apa-apa lagi --
+# installer sudah otomatis menjalankan ini di akhir tahap [8d/9].
+
+# Kalau ingin line_out:
+sudo /home/lenovo/atur_output_audio.sh line_out
+
+# Verifikasi:
+/home/lenovo/atur_output_audio.sh status
 ```
 
 ---
@@ -183,47 +199,42 @@ ssh lenovo@<server-ip> 'ls -la /home/lenovo/audio/ | head -20'
 
 ```bash
 sudo systemctl status tahrim-daemon.service
-# Should show: active (running)
+# Harus: active (running)
 
 sudo systemctl status bt-boot-connect.service
-# WAJAR kalau statusnya "inactive (dead)" -- ini Type=oneshot, jalan
-# sekali saat boot lalu selesai. Yang penting cek TIDAK gagal:
-sudo systemctl is-failed bt-boot-connect.service
-# Harus keluar: active (artinya tidak failed)
+# WAJAR "inactive (dead)" -- ini oneshot, sukses jalan sekali saat boot lalu selesai.
+# Cek historinya: systemctl status bt-boot-connect.service (lihat baris "Main PID" & waktu selesai)
+
+sudo systemctl status integritas-sistem.timer
+# Harus: active (waiting)
 ```
 
 ### 2. Health Check
 
 ```bash
 /home/lenovo/cek_kesehatan.sh
-
-# Should show:
-# - Services: active
-# - Bluetooth: TERHUBUNG
-# - NTP: yes
-# - Disk: sufficient space
-# - Recent logs: successful
 ```
+Output mencakup: status `tahrim-daemon.service`, status `bt-boot-connect.service`,
+10 log CRITICAL/WARNING terakhir, koneksi Bluetooth, sinkronisasi NTP, sisa
+disk, status timer pemulihan integritas, status pause bel Senin, **dan mode
+output audio yang sedang aktif**.
 
-### 3. Bluetooth Connectivity
+### 3. Konektivitas Output Audio
 
 ```bash
+# Kalau mode bluetooth:
 bluetoothctl info <MAC_SPEAKER>
-# Should show: Connected: yes
+# Harus: Connected: yes
 
-# Test audio playback
-mpv --audio-device=alsa/bluealsa /home/lenovo/audio/test.mp3
+# Tes bunyi cepat lewat output yang sedang aktif (mode apapun):
+/home/lenovo/atur_output_audio.sh test
 ```
 
 ### 4. Log Verification
 
 ```bash
 tail -50 /var/log/otomasi_audio.log
-
-# Should show:
-# - Successful service starts
-# - API calls to Aladhan (if prayer time configured)
-# - No ERROR messages (warnings OK)
+# Harus: service start sukses, tidak ada CRITICAL (WARNING wajar)
 ```
 
 ---
@@ -233,48 +244,41 @@ tail -50 /var/log/otomasi_audio.log
 ### 1. Manual Playback Test
 
 ```bash
-/home/lenovo/putar_audio.sh test "Test Audio" \
-    /home/lenovo/audio/Hymne-guru.mp3
+/home/lenovo/putar_audio.sh test "Test Audio" /home/lenovo/audio/Hymne-guru.mp3
 
-# Audio should play on speaker
-# Check log: grep "PLAY\|SUCCESS" /var/log/otomasi_audio.log
+# Cek log:
+grep -E "PLAY|SUKSES" /var/log/otomasi_audio.log | tail -5
 ```
 
 ### 2. Schedule Test
 
 ```bash
-# Add test schedule for 1 minute from now
+# Tambah jadwal ujian tes untuk 1 menit dari sekarang
 TEST_TIME=$(date -d "+1 minute" +%H:%M)
-/home/lenovo/kelola_ujian.sh tambah $TEST_TIME bel-masuk-ruangan.mp3
+/home/lenovo/kelola_ujian.sh tambah "$TEST_TIME" "*" bel-masuk-ruangan.mp3
 
-# Wait for time to pass
-# Audio should play automatically
+# Tunggu waktunya lewat -- audio harus otomatis berbunyi
 
-# Cleanup
-/home/lenovo/kelola_ujian.sh hapus $TEST_TIME
+# Bersihkan
+/home/lenovo/kelola_ujian.sh hapus "$TEST_TIME"
 ```
 
-### 3. Bluetooth Reconnection Test
+### 3. Bluetooth Reconnection Test (kalau mode bluetooth)
 
 ```bash
-# Disconnect Bluetooth speaker manually
-# Wait, lalu trigger satu playback manual (V14 reconnect terjadi
-# on-demand sebelum play, BUKAN otomatis tiap saat seperti versi lama)
-/home/lenovo/putar_audio.sh test "Test Reconnect" /home/lenovo/audio/test.mp3
+# Putuskan speaker manual, lalu jalankan bel apa saja (atau tunggu jadwal) --
+# sambung_bt.sh akan otomatis mencoba reconnect sebelum audio diputar.
 
-# Verify di log:
-grep "PLAY\|SUCCESS" /var/log/otomasi_audio.log | tail -5
+grep -E "RECOVERY|SUCCESS" /var/log/otomasi_audio.log | tail -5
 ```
 
-### 4. Reboot Test (khusus V14 — PENTING)
+### 4. Switching Output Test (BARU V15)
 
 ```bash
-# Test paling penting untuk memastikan bt-boot-connect.service bekerja
-sudo reboot
-
-# Setelah nyala lagi, tunggu ~1 menit, TANPA melakukan apapun manual:
-bluetoothctl info <MAC_SPEAKER> | grep Connected
-# Harus: Connected: yes (reconnect otomatis dari bt-boot-connect.service)
+sudo /home/lenovo/atur_output_audio.sh line_out
+sudo /home/lenovo/atur_output_audio.sh bluetooth
+/home/lenovo/atur_output_audio.sh status
+# Setiap switch harus tes bunyi otomatis dan mengupdate /etc/asound.conf
 ```
 
 ---
@@ -284,60 +288,61 @@ bluetoothctl info <MAC_SPEAKER> | grep Connected
 ### 1. Final Verification
 
 ```bash
-# [ ] All health checks passing
-# [ ] Audio files complete & correct
-# [ ] Cron jobs configured
-# [ ] Bluetooth reconnect setelah reboot berhasil (lihat Testing Phase #4)
-# [ ] Logs clean (no errors)
+# [ ] Semua health check lolos
+# [ ] File audio lengkap & benar
+# [ ] Cron jobs terkonfigurasi (crontab -l -u lenovo)
+# [ ] Output audio (bluetooth/line_out) stabil 10+ menit
+# [ ] Log bersih (tidak ada CRITICAL)
+# [ ] Backup berjalan (cek /home/lenovo/backup/ setelah jam 23:55)
 ```
 
 ### 2. Go-Live Procedure
 
 ```bash
-# 1. Set mode to production
+# 1. Set mode produksi
 /home/lenovo/mode_sekolah.sh hari_biasa
 
-# 2. Verify schedule
+# 2. Verifikasi jadwal
+/home/lenovo/kelola_harian.sh daftar
 /home/lenovo/kelola_ujian.sh daftar
 
-# 3. Monitor for 1 hour
+# 3. Monitor 1 jam pertama
 tail -f /var/log/otomasi_audio.log
 
-# 4. If all OK, mark in calendar
-# 5. Communicate to school staff
+# 4. Kalau semua OK, informasikan ke pihak sekolah
 ```
 
 ---
 
-## Troubleshooting During Deployment
+## Troubleshooting Selama Deployment
 
-### Issue: Installation hangs at [2/9]
-**Cause:** Bluetooth adapter not detected
+### Issue: Instalasi macet di [2/9] atau [5/9]
+**Sebab:** Bluetooth adapter tidak terdeteksi
 **Fix:**
 ```bash
 bluetoothctl list
-# If no output: Reboot, check BIOS, try different USB port
+# Kalau tidak ada output: reboot, cek BIOS, coba port USB lain
 ```
 
-### Issue: Installer fails at sudoers validation
-**Cause:** Syntax error in sudoers file
+### Issue: Installer gagal di validasi sudoers
+**Sebab:** Syntax error di file sudoers
 **Fix:**
 ```bash
 sudo visudo -c
-sudo rm -f /etc/sudoers.d/otomasi-audio
-# Re-run installer
+sudo rm -f /etc/sudoers.d/otomasi-audio-rfkill
+# Jalankan ulang installer
 ```
 
-### Issue: Audio not playing after installation
-**Cause:** Audio files missing or wrong path
+### Issue: Audio tidak bunyi setelah instalasi
+**Sebab:** File audio belum diupload, atau output audio belum sesuai hardware
 **Fix:**
 ```bash
 ls -la /home/lenovo/audio/ | head -20
-stat /home/lenovo/audio/test.mp3
-mpv /home/lenovo/audio/test.mp3
+/home/lenovo/atur_output_audio.sh status
+/home/lenovo/atur_output_audio.sh test
 ```
+Lihat [TROUBLESHOOTING.md](TROUBLESHOOTING.md) untuk penanganan lebih lengkap.
 
 ---
 
-**Estimated Total Deployment Time:** 30-45 minutes
-**Last Updated:** 2026-07-10 (V14)
+**Estimasi Total Waktu Deployment:** 30-45 menit (belum termasuk upload audio)
