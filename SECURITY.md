@@ -2,229 +2,241 @@
 
 ## Overview
 
-Sistem Audio Sekolah ini didesain dengan security-first mindset, mengikuti Debian hardening best practices dan CIS Benchmarks.
+Dokumen ini menjelaskan **apa yang sesungguhnya diterapkan di kode** (bukan daftar
+aspirasional) — termasuk trade-off keamanan yang disengaja demi kenyamanan
+operasional, supaya admin tahu persis apa yang perlu diawasi.
 
 ---
 
-## Security Features
+## 1. Sudoers — Isi Sesungguhnya
 
-### 1. **Sudoers Restrictions**
+**File:** `/etc/sudoers.d/otomasi-audio-rfkill`
 
-**File:** `/etc/sudoers.d/otomasi-audio`
+Ditulis ulang **setiap kali installer dijalankan** (bukan hanya kalau belum ada),
+lalu divalidasi `visudo -c` ke file sementara SEBELUM menimpa file asli — supaya
+kalau sintaksnya rusak, sudoers lama yang masih valid tidak ikut hilang.
 
 ```bash
-# HANYA ini yang diizinkan:
 lenovo ALL=(ALL) NOPASSWD: /usr/sbin/rfkill
-lenovo ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart bluealsa
+lenovo ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart tahrim-daemon.service
+lenovo ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart bt-boot-connect.service
 lenovo ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart bluetooth
+lenovo ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart bluealsa
+lenovo ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart bluetooth bluealsa
+
+# BARU V15 — lihat catatan trade-off di bawah:
+lenovo ALL=(ALL) NOPASSWD: /home/lenovo/atur_output_audio.sh
+lenovo ALL=(ALL) NOPASSWD: /home/lenovo/atur_output_audio.sh *
 ```
 
-**Prinsip:** Principle of Least Privilege (PoLP)
-- ❌ Tidak ada `NOPASSWD: ALL`
-- ✅ Hanya perintah yang diperlukan
-- ✅ Semua call di-log di syslog
+**Prinsip:** Principle of Least Privilege (PoLP) — tidak ada `NOPASSWD: ALL`,
+hanya perintah spesifik yang benar-benar dipanggil oleh skrip watchdog/recovery.
 
-### 2. **Systemd Service Hardening**
+### ⚠️ Trade-off Keamanan yang Disengaja: `atur_output_audio.sh`
 
-Setiap service punya:
+Dua baris terakhir di atas berarti user `lenovo` bisa menjalankan
+`atur_output_audio.sh` sebagai root **tanpa password**. Skrip itu sendiri
+melakukan **auto-elevate** (`exec sudo "$SKRIP_ABSOLUT" "$@"`) supaya bisa
+menulis `/etc/asound.conf` dan memutus Bluetooth tanpa admin harus ketik
+`sudo` manual tiap kali ganti output.
+
+**Konsekuensi nyata:** karena skrip ini berada di `/home/lenovo` (bisa ditulis
+oleh user `lenovo` sendiri), NOPASSWD ini **secara teknis berarti user itu
+punya jalur ke root** kalau dia (atau siapa pun yang berhasil login sebagai
+`lenovo`) mengedit isi skrip tersebut lalu menjalankannya.
+
+Ini adalah **trade-off yang disengaja** demi kenyamanan operasional harian
+(admin sekolah tidak perlu ingat password sudo tiap ganti output audio).
+Kalau lingkungan Anda butuh isolasi lebih ketat:
+
+```bash
+# Opsi pengerasan: pindahkan skrip ke lokasi root-owned, lalu ubah baris
+# sudoers agar menunjuk ke path baru itu (bukan lagi /home/lenovo/...).
+sudo cp /home/lenovo/atur_output_audio.sh /usr/local/bin/atur_output_audio.sh
+sudo chown root:root /usr/local/bin/atur_output_audio.sh
+sudo chmod 755 /usr/local/bin/atur_output_audio.sh
+# lalu edit /etc/sudoers.d/otomasi-audio-rfkill menyesuaikan path
+```
+
+---
+
+## 2. Routing Audio Dinamis (`/etc/asound.conf`) — Pengerasan V15c
+
+`atur_output_audio.sh` menulis ulang `/etc/asound.conf` setiap kali output
+diganti. Mode `line_out` memakai plugin ALSA `dmix` (shared-memory ring buffer
+antar proses pemutaran):
+
+```
+pcm.line_out_aktif {
+    type dmix
+    ipc_key 1024
+    ipc_perm 0600   # <- V15c: owner-only, BUKAN 0666 (world-writable)
+    ...
+}
+```
+
+**Riwayat:** versi V15 awal memakai `ipc_perm 0666`, yang berarti **siapa pun**
+proses/user lokal di sistem bisa menulis ke shared-memory audio yang sedang
+aktif diputar — celah kecil untuk tamper/DoS. Diketatkan ke `0600` di V15c
+karena semua proses pemutaran (cron, systemd daemon, manual) selalu berjalan
+sebagai user OS yang sama.
+
+Validasi tambahan: `CARD_ID` (hasil auto-deteksi atau input manual admin)
+divalidasi lewat regex `^[A-Za-z0-9_.-]+$` sebelum dipakai menulis config ALSA
+maupun `sed` ke `sekolah.conf`, untuk mencegah config rusak akibat input ganjil.
+
+---
+
+## 3. Systemd Service — Konfigurasi Sesungguhnya
+
+**Tidak ada** `PrivateTmp`, `ProtectSystem`, `NoNewPrivileges`, dsb. di unit
+file saat ini — kalau Anda ingin menambahkannya, ini adalah area pengerasan
+lanjutan yang **belum** diterapkan, bukan sesuatu yang sudah aktif. Konfigurasi
+sesungguhnya:
 
 ```systemd
+# bt-boot-connect.service — oneshot, jalan SEKALI saat boot
 [Service]
-PrivateTmp=yes                    # /tmp isolated per service
-ProtectSystem=partial             # /usr, /etc readonly
-NoNewPrivileges=yes               # Tidak bisa gain privileges
-ProtectClock=yes                  # Tidak bisa set waktu
-ProtectHostname=yes               # Tidak bisa set hostname
-ProtectControlGroups=yes          # Protect cgroup
-RestartSec=10                     # Delay sebelum restart
+Type=oneshot
+ExecStartPre=/bin/sleep 10
+ExecStart=/home/lenovo/sambung_bt.sh
+User=lenovo
+RemainAfterExit=no
+
+# tahrim-daemon.service — daemon persisten
+[Service]
+Type=simple
+ExecStartPre=/bin/sleep 5
+ExecStart=/home/lenovo/tahrim_daemon.sh
+Restart=always
+RestartSec=10
+User=lenovo
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+# integritas-sistem.service + .timer — cek tiap 15 menit + saat boot
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/cek_integritas_sistem.sh
+# (berjalan sebagai root — lihat bagian Disaster Recovery di bawah)
+
+# otomasi-audio-alert@.service — dipicu OnFailure= service lain
+[Service]
+Type=oneshot
+ExecStart=/home/lenovo/alert_gagal.sh %i
+User=lenovo
 ```
 
-### 3. **Pre-Installation Validation**
-
-✅ Validasi sebelum install:
-- User existence check
-- Coordinate format validation
-- MAC address format validation
-- Tool availability check
-- Debian version check
-
-### 4. **API Rate Limiting**
-
-**Aladhan API:**
-- Max 1 call per 12 jam (daily schedule)
-- Fallback ke local database jika gagal
-- Circuit breaker: stop calling jika 3x gagal beruntun
-- Exponential backoff retry strategy
-
-```bash
-MAX_RETRIES=3
-RETRY_DELAY=5  # seconds between retry
-
-if [ "$RETRY_COUNT" -ge 3 ]; then
-    # Use offline cache
-fi
-```
-
-### 5. **Audit Logging**
-
-Semua aksi dicatat di:
-```bash
-/var/log/otomasi_audio.log
-```
-
-Logged events:
-- `[PLAY]` - Audio playback
-- `[ERROR]` - Error conditions
-- `[WARNING]` - Warning conditions
-- `[SUCCESS]` - Key operations
-- `[RECOVERY]` - Auto-recovery actions
-- `[INFO]` - Informational messages
-
-### 6. **File Permissions**
-
-```bash
-# Config file (sensitive)
--rw-r--r-- lenovo:lenovo /home/lenovo/sekolah.conf
-
-# Scripts (executable only by lenovo)
--rwxr-x--- lenovo:lenovo /home/lenovo/*.sh
-
-# Audio directory (read for audio group)
-drwxr-x--- lenovo:audio /home/lenovo/audio/
-
-# Log file (restricted)
--rw-rw---- lenovo:audio /var/log/otomasi_audio.log
-```
-
-### 7. **Error Propagation & Handling**
-
-- ✅ Proper error checking pada setiap tahap
-- ✅ Graceful degradation jika ada error
-- ✅ Automatic recovery mechanism
-- ✅ Circuit breaker pattern untuk API
-- ✅ Fallback to cached data
+Kedua service utama (`bt-boot-connect`, `tahrim-daemon`) punya `OnFailure=`
+mengarah ke `otomasi-audio-alert@%n.service`, yang mencatat CRITICAL ke log
+kalau service gagal berulang — bukan diam-diam retry selamanya tanpa jejak.
 
 ---
 
-## Pre-Deployment Security Checklist
+## 4. Disaster Recovery — `cek_integritas_sistem.sh`
 
-- [ ] Disable root SSH login
-  ```bash
-  # In /etc/ssh/sshd_config
-  PermitRootLogin no
-  ```
+**Lokasi:** `/usr/local/bin/cek_integritas_sistem.sh` (**bukan** di `/home`)
+**Alasan:** kalau `/home/lenovo` bersih total (pernah terjadi nyata di
+lapangan akibat mati listrik berulang/crash filesystem), skrip penyelamat ini
+harus tetap ada supaya bisa mengunduh ulang dari GitHub.
 
-- [ ] Use SSH keys only (no password auth)
-  ```bash
-  PasswordAuthentication no
-  PubkeyAuthentication yes
-  ```
+**Cara kerja:**
+1. Timer `integritas-sistem.timer` menjalankannya tiap 15 menit + saat boot
+2. Mengecek daftar file/folder kunci (skrip inti, config, folder audio)
+3. Kalau **<70%** hilang → anggap kejadian kecil, catat CRITICAL saja, **TIDAK** auto-reinstall (supaya tidak menimpa kustomisasi admin)
+4. Kalau **≥70%** hilang → anggap `/home` wipe total, otomatis:
+   - Unduh tarball repo dari `https://github.com/saroppudin/audio-school-system`
+   - Jalankan ulang installer
+   - Pulihkan config (`sekolah.conf`, `jadwal_harian.conf`, `jadwal_ujian.conf`) dari `/var/backups/audio-school-system` (backup harian di luar `/home`)
+   - Pulihkan file audio `.mp3` dari repo GitHub kalau ada
+5. Cooldown 1 jam (`.terakhir_pemulihan`) — tidak akan mencoba pulihkan berulang-ulang kalau masalah terus terjadi
 
-- [ ] Enable UFW firewall
-  ```bash
-  sudo apt install ufw
-  sudo ufw default deny incoming
-  sudo ufw default allow outgoing
-  sudo ufw allow ssh
-  sudo ufw enable
-  ```
+**Implikasi keamanan:** skrip ini punya kemampuan `git clone`/`curl` dari
+internet lalu **mengeksekusi installer sebagai root secara otomatis** tanpa
+campur tangan manusia. Ini sengaja demi ketahanan operasional (sekolah di
+lokasi terpencil tanpa admin IT standby), tapi berarti integritas
+`https://github.com/saroppudin/audio-school-system` (siapa yang punya akses
+push ke branch `main`) menjadi bagian penting dari rantai kepercayaan sistem
+ini. Kalau repo tersebut dikompromikan, mekanisme pemulihan ini bisa jadi
+jalur eksekusi kode arbitrer sebagai root.
 
-- [ ] Enable automatic security updates
-  ```bash
-  sudo apt install unattended-upgrades
-  sudo dpkg-reconfigure --priority=low unattended-upgrades
-  ```
+---
 
-- [ ] Restrict /tmp, /var/tmp, /dev/shm
-  ```bash
-  # Add to /etc/fstab
-  tmpfs /tmp tmpfs defaults,nosuid,nodev,noexec 0 0
-  tmpfs /var/tmp tmpfs defaults,nosuid,nodev,noexec 0 0
-  tmpfs /dev/shm tmpfs defaults,nosuid,nodev,noexec 0 0
-  ```
+## 5. Audit Logging
 
-- [ ] Disable unnecessary services
-  ```bash
-  sudo systemctl disable avahi-daemon
-  sudo systemctl disable cups
-  ```
+Semua aksi dicatat di `/var/log/otomasi_audio.log` (permission `0664`,
+owner `lenovo:audio`, logrotate harian retensi 7 hari, compress).
 
-- [ ] Setup fail2ban
-  ```bash
-  sudo apt install fail2ban
-  sudo systemctl enable --now fail2ban
-  ```
+Prefix log yang dipakai secara konsisten:
+`[PLAY]` `[SUKSES]` `[GAGAL]` `[CRITICAL]` `[WARNING]` `[INFO]` `[RECOVERY]`
+`[SKIP]` `[STANDBY]` `[CATCHUP]` `[DEBUG]`
+
+---
+
+## 6. Validasi Pre-Instalasi
+
+Installer menolak jalan kalau:
+- `MAC_SPEAKER` tidak sesuai format `XX:XX:XX:XX:XX:XX` (regex hex 2 digit × 6, dipisah `:`)
+- (Tambahkan validasi lain di sini sesuai isi bagian "0. VALIDASI AWAL" di installer Anda)
+
+---
+
+## Pre-Deployment Security Checklist (Rekomendasi Umum Debian, di Luar Skrip)
+
+Item di bawah ini adalah rekomendasi hardening OS umum — **bukan** sesuatu
+yang dijalankan otomatis oleh installer, jadi terapkan manual sesuai kebutuhan:
+
+- [ ] Disable root SSH login (`PermitRootLogin no` di `/etc/ssh/sshd_config`)
+- [ ] SSH key-only auth (`PasswordAuthentication no`)
+- [ ] Firewall UFW (`ufw default deny incoming`, allow ssh saja)
+- [ ] `unattended-upgrades` untuk security patch otomatis
+- [ ] `fail2ban` untuk percobaan brute-force SSH
 
 ---
 
 ## Post-Installation Security Verification
 
 ```bash
-# Verify sudoers config
+# Verifikasi sudoers
 sudo visudo -c
-sudo cat /etc/sudoers.d/otomasi-audio
+sudo cat /etc/sudoers.d/otomasi-audio-rfkill
 
-# Check service isolation
-sudo systemctl cat anti-putus.service | grep -E "Protect|Private"
+# Cek isi /etc/asound.conf aktif (harus ipc_perm 0600 kalau mode line_out)
+cat /etc/asound.conf
 
 # Monitor audit log
 tail -f /var/log/otomasi_audio.log
 
-# Check permissions
+# Cek permission file kunci
 ls -la /home/lenovo/sekolah.conf
 ls -la /var/log/otomasi_audio.log
+ls -la /etc/sudoers.d/otomasi-audio-rfkill   # harus 440
 ```
 
 ---
 
-## Known Vulnerabilities & Mitigations
+## Known Risks & Mitigasi
 
-| Risk | Impact | Mitigation |
-|------|--------|------------|
-| Bluetooth pairing spoofing | High | Device whitelist (MAC address fixed) |
-| Log file tampering | Medium | File permissions (0660), audit trail |
-| API downtime | Low | Local cache fallback (24+ hours) |
-| Cron job hijacking | Medium | Restricted sudoers, file permissions |
-| Network attack | Low | Firewall + fail2ban + rate limiting |
-
----
-
-## Backup & Recovery Security
-
-```bash
-# Backups tersimpan di:
-/home/lenovo/backup/config_*.tar.gz
-
-# Retention:
-- Keep: Max 10 backups
-- Delete: Older than 30 days
-
-# Backup konfigurasi sebelum modifikasi:
-sudo cp /home/lenovo/sekolah.conf \
-    /home/lenovo/sekolah.conf.backup
-```
+| Risiko | Dampak | Mitigasi Saat Ini |
+|---|---|---|
+| NOPASSWD sudo untuk `atur_output_audio.sh` di `/home` (writable user) | Sedang–Tinggi | Trade-off disengaja demi kenyamanan; bisa diperketat (lihat bagian 1) |
+| `cek_integritas_sistem.sh` auto-eksekusi installer dari GitHub sebagai root | Tinggi (kalau repo dikompromikan) | Cooldown 1 jam; ambang 70% mencegah trigger dari kejadian kecil |
+| Bluetooth pairing spoofing | Sedang | MAC address tetap (whitelist implisit lewat `MAC_SPEAKER`) |
+| API Aladhan downtime | Rendah | Fallback otomatis ke `jadwal_sholat.json` lokal |
+| `/etc/asound.conf` dmix shared-memory | Rendah (setelah V15c) | `ipc_perm 0600`, sebelumnya `0666` |
+| Log file tampering | Rendah | Permission `0664`, owner grup `audio` |
 
 ---
 
-## Security Update Procedure
+## Backup & Recovery
 
 ```bash
-# 1. Check available updates
-sudo apt update
-sudo apt list --upgradable
+# Backup harian otomatis (cron 23:55):
+/home/lenovo/backup/config_YYYYMMDD.tar.gz     # retensi 14 hari
+/var/backups/audio-school-system/*.bak         # di luar /home, untuk disaster recovery
 
-# 2. Test update (recommended)
-sudo apt upgrade -s
-
-# 3. Apply updates
-sudo apt upgrade
-
-# 4. Verify no broken dependencies
-sudo apt check
-
-# 5. Check if services still running
-systemctl status anti-putus.service
-systemctl status tahrim-daemon.service
+# Restore manual kalau perlu:
+tar -xzf /home/lenovo/backup/config_YYYYMMDD.tar.gz -C /home/lenovo/
 ```
 
 ---
@@ -232,11 +244,10 @@ systemctl status tahrim-daemon.service
 ## References
 
 - [Debian Security Wiki](https://wiki.debian.org/Security)
-- [CIS Debian Linux Benchmark](https://www.cisecurity.org/benchmark/debian_linux)
 - [Systemd Security](https://www.freedesktop.org/software/systemd/man/systemd.exec.html)
+- [ALSA dmix/bluealsa Plugin Docs](https://www.alsa-project.org/wiki/Asoundrc)
 
 ---
 
-**Last Updated:** 2025-07-05  
-**Security Level:** Production Grade  
-**Audit Status:** Manual review recommended annually
+**Security Level:** Production, dengan trade-off yang didokumentasikan secara eksplisit di atas (bukan diklaim "aman total")
+**Audit Status:** Manual review disarankan setiap kali `atur_output_audio.sh` atau sudoers diubah
