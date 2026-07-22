@@ -123,6 +123,89 @@
 #  23. 'hari_biasa' juga diperluas: sekarang menghidupkan SEMUA kunci
 #      bel harian (bukan cuma 3 yang lama) secara dinamis.
 #
+# TAMBAHAN VERSION 15 (fitur lapangan + pemulihan bencana, berdasarkan
+# insiden nyata /home sempat wipe total karena mati listrik berulang):
+#  30. cek_integritas_sistem.sh (BARU) -- pemeriksa berkala (tiap 15
+#      menit + saat boot) yang hidup DI LUAR /home (/usr/local/bin),
+#      supaya tidak ikut hilang kalau /home wipe total. Kalau >=70%
+#      penanda kunci (script/config/folder) hilang, OTOMATIS unduh
+#      ulang installer dari GitHub, suntik config lama dari
+#      /etc/audio-school-system/recovery.conf, install ulang, lalu
+#      pulihkan jadwal_harian.conf/jadwal_ujian.conf terakhir dari
+#      /var/backups/audio-school-system/ (dan file audio juga, KALAU
+#      memang disimpan di repo GitHub). Ada cooldown 1 jam antar
+#      percobaan supaya tidak reinstall berulang kalau gagal terus.
+#  29. backup.sh sekarang juga menyalin jadwal_harian.conf,
+#      jadwal_ujian.conf, sekolah.conf ke /var/backups/audio-school-system
+#      (DI LUAR /home) setiap kali jalan -- supaya ada salinan yang
+#      selamat walau /home rusak total.
+#  28. Pilihan output audio: AUDIO_OUTPUT="bluetooth" (default) atau
+#      "line_out" di sekolah.conf. Ganti lewat atur_output_audio.sh
+#      {bluetooth|line_out|status}. Mode line_out melewati semua urusan
+#      Bluetooth (sambung_bt.sh, cek koneksi) dan main langsung lewat
+#      jack audio analog PC (AUDIO_DEVICE_LINEOUT, default hw:0,0).
+#  27. Pause otomatis bel jam pelajaran Senin: begitu bel masuk
+#      (kunci jam_ke_0_senin) selesai diputar, semua bel jam_ke_*_senin
+#      berikutnya otomatis di-skip sampai admin jalankan
+#      lanjutkan_bel_senin.sh (upacara bendera durasinya suka beda-beda,
+#      jadi tidak dijadwalkan pakai jam tetap). Ada safety-valve:
+#      auto-batal sendiri kalau sudah >90 menit dan admin lupa jalankan
+#      lanjutkan_bel_senin.sh, supaya bel tidak diam seharian.
+#  26. tahrim_daemon.sh sekarang MENUNGGU NTP sinkron (maks 2 menit)
+#      sebelum menghitung jadwal hari itu -- mencegah jadwal Subuh/
+#      Maghrib meleset puluhan menit kalau daemon baru boot sebelum jam
+#      sistem sempat sinkron (kejadian nyata: Tarhim Maghrib telat 41
+#      menit gara-gara ini).
+#
+# TAMBAHAN VERSION 15b (PERBAIKAN INTI: switching Bluetooth <-> Line Out
+# sekarang mulus, bersih, dan instan -- sebelumnya cuma ganti variabel
+# AUDIO_OUTPUT di config tanpa mengubah routing ALSA sistem, sehingga
+# rawan "device busy", suara nyangkut di output lama, atau harus restart
+# proses):
+#  24. ROUTING ALSA DINAMIS (/etc/asound.conf): atur_output_audio.sh
+#      SEKARANG MENULIS ULANG /etc/asound.conf setiap kali output
+#      diganti, mengarahkan pcm.!default langsung ke:
+#        - Mode Bluetooth -> pcm virtual "bluealsa" terkunci ke MAC
+#          speaker (lewat "plug" supaya konversi format otomatis).
+#        - Mode Line Out  -> pcm virtual "dmix" di atas card analog yang
+#          TERDETEKSI OTOMATIS PAKAI NAMA KARTU (bukan nomor index),
+#          supaya tidak meleset kalau nomor kartu bergeser setelah
+#          reboot. dmix juga mencegah error "Device or resource busy"
+#          kalau ada beberapa proses audio main beruntun/bersamaan.
+#      Karena aplikasi ALSA membaca /etc/asound.conf setiap kali PCM
+#      dibuka, perubahan ini langsung berlaku untuk pemutaran BERIKUTNYA
+#      tanpa perlu restart service/daemon apapun -- itulah yang membuat
+#      transisi terasa instan.
+#  25c. UNIFIED PLAYBACK ENGINE (putar_audio.sh): karena routing sudah
+#      ditangani di level sistem oleh /etc/asound.conf, mpv SEKARANG
+#      SELALU memutar ke "alsa/default" -- tidak perlu lagi cabang
+#      device berbeda untuk Bluetooth vs Line Out. Ini menghemat resource
+#      dan meniadakan kegagalan playback akibat device string yang salah.
+#  26b. AUTO-ELEVATE + SUDOERS: atur_output_audio.sh sekarang otomatis
+#      memicu 'sudo' sendiri kalau dijalankan user biasa (perlu root
+#      untuk menulis /etc/asound.conf), dan sudah didaftarkan NOPASSWD di
+#      sudoers supaya user ${USER_SISTEM} bisa mengeksekusinya instan
+#      tanpa diminta password. CATATAN KEAMANAN: karena skrip ini ada di
+#      /home (bisa ditulis user tsb), NOPASSWD ini secara teknis berarti
+#      user itu punya jalur ke root kalau dia mau mengedit skrip. Ini
+#      trade-off yang disengaja demi kenyamanan operasional harian sesuai
+#      permintaan; kalau mau lebih aman, pindahkan skrip ini ke
+#      /usr/local/bin (root-owned, tidak bisa ditulis user biasa) dan
+#      arahkan sudoers ke path baru itu.
+#  27b. CLEAN DISCONNECT & UNMUTE HARDWARE: pindah ke Line Out otomatis
+#      memutus koneksi Bluetooth yang sedang aktif (speaker jadi bebas
+#      dipakai perangkat lain) lalu unmute penuh semua channel analog
+#      Lenovo S200z (Master, Headphone, Speaker, Front, PCM). Pindah ke
+#      Bluetooth otomatis memicu pencarian & penyambungan ulang instan.
+#
+# TAMBAHAN VERSION 15 (fitur lapangan + pemulihan bencana, berdasarkan
+# insiden nyata /home sempat wipe total karena mati listrik berulang):
+#  25b. tahrim_daemon.sh: catch-up -- kalau Subuh/Maghrib baru lewat
+#      <30 menit (mis. daemon sempat restart), TETAP diputar telat,
+#      bukan di-skip total. Kalau sudah lewat >30 menit, baru di-skip.
+#  25c. cek_kesehatan.sh menampilkan status pause Senin, output audio
+#      aktif, dan status integritas-sistem.timer.
+#
 # TAMBAHAN VERSION 14 (hapus penjaga koneksi 24 jam, sesuai kebutuhan lapangan):
 #  25. anti-putus.service (loop 24 jam + silent keep-alive audio) DIHAPUS.
 #      Speaker BT-MAX terbukti tidak butuh keep-alive untuk tetap
@@ -178,7 +261,6 @@ if ! [[ "$MAC_SPEAKER" =~ ^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$ ]]; then
     echo "[ERROR] Format MAC_SPEAKER tidak valid. Contoh format yang benar: 16:3E:E3:5F:EF:E5"
     exit 1
 fi
-MAC_SPEAKER_LOWER=$(echo "$MAC_SPEAKER" | tr 'A-F' 'a-f')
 
 # PERBAIKAN (BARU V6): pembungkus perintah-perintah penting supaya
 # kegagalan tidak diam-diam terlewat. Perintah non-fatal (systemctl,
@@ -256,7 +338,7 @@ usermod -aG audio,bluetooth "${USER_SISTEM}"
 # tidak bergantung pada 'power on' manual saat instalasi saja.
 echo "[2/9] Mengonfigurasi adapter Bluetooth agar auto-enable saat boot..."
 if [ -f /etc/bluetooth/main.conf ]; then
-    cp /etc/bluetooth/main.conf /etc/bluetooth/main.conf.bak.$(date +%s)
+    cp /etc/bluetooth/main.conf "/etc/bluetooth/main.conf.bak.$(date +%s)"
     if grep -q "^AutoEnable" /etc/bluetooth/main.conf; then
         sed -i 's/^AutoEnable.*/AutoEnable=true/' /etc/bluetooth/main.conf
     elif grep -q "^\[Policy\]" /etc/bluetooth/main.conf; then
@@ -320,15 +402,13 @@ sleep 1
 jalankan "Restart service bluealsa" systemctl restart bluealsa
 sleep 2
 
-# PERBAIKAN (BARU): kunci PCM ALSA "bluealsa" ke MAC speaker yang benar.
-# Tanpa ini, DEV memakai placeholder 00:00:00:00:00:00 dan audio TIDAK
-# akan pernah keluar ke speaker walau Bluetooth berhasil connect.
-echo "[4/9] Mengunci PCM ALSA 'bluealsa' ke speaker (${MAC_SPEAKER})..."
-[ -f /etc/asound.conf ] && cp /etc/asound.conf /etc/asound.conf.bak.$(date +%s)
-cat <<EOF > /etc/asound.conf
-defaults.bluealsa.device "${MAC_SPEAKER}"
-defaults.bluealsa.profile "a2dp"
-EOF
+# PERBAIKAN (V15): dulu di sini langsung ditulis /etc/asound.conf format
+# lama ("defaults.bluealsa.device ..."). Format itu SEKARANG SUDAH
+# DIGANTIKAN oleh routing dinamis pcm.!default yang dikelola
+# atur_output_audio.sh (lihat Langkah 8d di bawah, dipanggil otomatis
+# sekali di akhir instalasi supaya /etc/asound.conf awal langsung benar
+# -- tidak perlu lagi ditulis manual di sini).
+echo "[4/9] (Pengaturan detail /etc/asound.conf dilakukan otomatis di akhir instalasi oleh atur_output_audio.sh)"
 
 # PERBAIKAN (BARU): PAIRING otomatis ke speaker. Ini yang HILANG di V4
 # dan menjadi penyebab utama "bluetooth tidak bisa konek" -- V4 langsung
@@ -374,6 +454,13 @@ ${USER_SISTEM} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart bt-boot-connect.se
 ${USER_SISTEM} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart bluetooth
 ${USER_SISTEM} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart bluealsa
 ${USER_SISTEM} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart bluetooth bluealsa
+# PERBAIKAN (V15): atur_output_audio.sh sekarang butuh root untuk menulis
+# /etc/asound.conf (routing ALSA dinamis) & memutus koneksi Bluetooth
+# saat pindah ke line_out. Auto-elevate di dalam skrip memicu 'sudo $0',
+# baris ini membuatnya instan tanpa password. Lihat catatan keamanan V15
+# di header skrip ini soal trade-off NOPASSWD pada skrip di /home.
+${USER_SISTEM} ALL=(ALL) NOPASSWD: ${DIR_BASE}/atur_output_audio.sh
+${USER_SISTEM} ALL=(ALL) NOPASSWD: ${DIR_BASE}/atur_output_audio.sh *
 EOF
 if visudo -c -f "$SUDOERS_TMP" &>/dev/null; then
     mv "$SUDOERS_TMP" "$SUDOERS_FILE"
@@ -392,6 +479,25 @@ echo "[6/9] Membuat struktur folder dan file konfigurasi..."
 mkdir -p "${DIR_AUDIO}"
 mkdir -p "${DIR_FLAG}"
 
+# PERBAIKAN: folder config & backup DI LUAR /home, supaya kalau /home
+# bersih total (corrupt filesystem, salah hapus, dsb), data untuk
+# PEMULIHAN OTOMATIS tetap ada. /etc dan /var/backups ada di partisi
+# root, bukan partisi/folder /home.
+mkdir -p /etc/audio-school-system
+mkdir -p /var/backups/audio-school-system
+chown ${USER_SISTEM}:${USER_SISTEM} /var/backups/audio-school-system
+
+cat <<EOF > /etc/audio-school-system/recovery.conf
+# Salinan config inti untuk PEMULIHAN OTOMATIS (dipakai
+# cek_integritas_sistem.sh kalau /home/${USER_SISTEM} hilang total).
+# File ini di /etc, bukan di /home, supaya tidak ikut hilang.
+USER_SISTEM="${USER_SISTEM}"
+NAMA_SEKOLAH="${NAMA_SEKOLAH}"
+GARIS_LINTANG="${GARIS_LINTANG}"
+GARIS_BUJUR="${GARIS_BUJUR}"
+MAC_SPEAKER="${MAC_SPEAKER}"
+EOF
+
 cat <<EOF > ${DIR_BASE}/sekolah.conf
 # FILE KONFIGURASI GENERATED AUTOMATICALLY
 NAMA_SEKOLAH="${NAMA_SEKOLAH}"
@@ -406,9 +512,11 @@ DB_LOKAL="${DIR_BASE}/jadwal_sholat.json"
 CONF_UJIAN="${DIR_BASE}/jadwal_ujian.conf"
 CONF_HARIAN="${DIR_BASE}/jadwal_harian.conf"
 
-# PERBAIKAN: pilihan output audio -- "bluetooth" (default) atau
-# "line_out" (jack audio analog PC ke amplifier kabel). Ganti dengan
-# ${DIR_BASE}/atur_output_audio.sh, jangan edit manual supaya konsisten.
+# PERBAIKAN (V15): pilihan output audio -- "bluetooth" (default) atau
+# "line_out" (jack audio analog PC ke amplifier kabel). Ganti HANYA
+# lewat ${DIR_BASE}/atur_output_audio.sh, jangan edit manual -- skrip
+# itu juga menulis ulang /etc/asound.conf (routing ALSA sistem) supaya
+# switching benar-benar berpindah, bukan cuma variabel di file ini.
 AUDIO_OUTPUT="bluetooth"
 AUDIO_DEVICE_LINEOUT="hw:0,0"
 EOF
@@ -617,8 +725,14 @@ mkdir -p "$DIR_FLAG"
 KUNCI="$1"; NAMA="$2"; shift 2
 FILES=("$@")
 
+# PERBAIKAN (V15c - DRY): satu fungsi logging dipakai ulang alih-alih
+# menulis "$(date ...) - [X] - ..." >> "$LOG_FILE" berulang di 8+ tempat.
+catat() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$LOG_FILE"
+}
+
 if [ -f "${DIR_FLAG}/semua.off" ] || [ -f "${DIR_FLAG}/${KUNCI}.off" ]; then
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - [SKIP] - $NAMA dilewati (mode nonaktif sedang aktif)." >> "$LOG_FILE"
+    catat "[SKIP] - $NAMA dilewati (mode nonaktif sedang aktif)."
     exit 0
 fi
 
@@ -629,21 +743,45 @@ fi
 case "$KUNCI" in
     jam_ke_*_senin)
         if [ -f "${DIR_FLAG}/pause_senin.flag" ]; then
-            echo "$(date '+%Y-%m-%d %H:%M:%S') - [SKIP] - $NAMA di-pause (menunggu upacara Senin selesai, jalankan lanjutkan_bel_senin.sh)." >> "$LOG_FILE"
-            exit 0
+            # PERBAIKAN: safety-valve -- auto-batalkan pause kalau sudah
+            # lebih dari 90 menit sejak bel masuk (jaga-jaga admin lupa
+            # jalankan lanjutkan_bel_senin.sh setelah upacara selesai;
+            # tanpa ini, bel Senin bisa diam SEHARIAN tanpa peringatan).
+            PAUSE_SEJAK=$(cat "${DIR_FLAG}/pause_senin.flag" 2>/dev/null)
+            SEKARANG_EPOCH=$(date +%s)
+            if [[ "$PAUSE_SEJAK" =~ ^[0-9]+$ ]] && [ $(( SEKARANG_EPOCH - PAUSE_SEJAK )) -gt 5400 ]; then
+                rm -f "${DIR_FLAG}/pause_senin.flag"
+                catat "[INFO] - Pause bel Senin otomatis dibatalkan (sudah >90 menit -- kemungkinan admin lupa jalankan lanjutkan_bel_senin.sh)."
+            else
+                catat "[SKIP] - $NAMA di-pause (menunggu upacara Senin selesai, jalankan lanjutkan_bel_senin.sh)."
+                exit 0
+            fi
         fi
         ;;
 esac
 
 for f in "${FILES[@]}"; do
-    [ -f "$f" ] || echo "$(date '+%Y-%m-%d %H:%M:%S') - [CRITICAL] - File hilang: $f" >> "$LOG_FILE"
+    [ -f "$f" ] || catat "[CRITICAL] - File hilang: $f"
 done
 
-# PERBAIKAN: pilihan output audio. Kalau "line_out", lewati semua
-# urusan Bluetooth sama sekali (tidak perlu sambung_bt.sh ataupun cek
-# koneksi) dan langsung mainkan lewat jack audio analog PC.
+# PERBAIKAN (V15 - UNIFIED PLAYBACK ENGINE): routing sistem SUDAH
+# ditangani secara dinamis di level ALSA oleh atur_output_audio.sh, yang
+# menulis /etc/asound.conf setiap kali output diganti (pcm.!default ->
+# bluealsa terkunci MAC speaker untuk mode bluetooth, atau dmix di atas
+# card analog untuk mode line_out). Karena itu mpv TIDAK PERLU LAGI
+# dibedakan device-nya per mode -- selalu cukup "alsa/default". Cek
+# koneksi di bawah ini HANYA untuk logging/diagnostik.
 if [ "$AUDIO_OUTPUT" = "line_out" ]; then
-    MPV_AUDIO_DEVICE="alsa/${AUDIO_DEVICE_LINEOUT}"
+    # PERBAIKAN (V15c - BUG): versi sebelumnya "grep -qv 'bluealsa\|HDMI'"
+    # SELALU bernilai benar (exit 0) karena aplay -l selalu punya baris
+    # lain (header, "Subdevices: ...", dst) yang tidak memuat kata
+    # "bluealsa"/"HDMI" -- jadi CRITICAL di bawah ini TIDAK PERNAH
+    # terpicu walau kartu analognya benar-benar tidak ada. Sekarang
+    # dicek TEPAT pola "^card" yang bukan HDMI (sama seperti di
+    # atur_output_audio.sh), bukan sembarang baris.
+    if ! aplay -l 2>/dev/null | awk '"'"'/^card/ && !/HDMI/ {f=1} END{exit !f}'"'"'; then
+        catat "[CRITICAL] - $NAMA GAGAL DIPUTAR: tidak ada kartu suara analog terdeteksi ALSA untuk mode line_out. Cek kabel/sound card, atau jalankan atur_output_audio.sh line_out untuk auto-deteksi ulang."
+    fi
 else
     "${DIR_SKRIP}/sambung_bt.sh"
 
@@ -651,21 +789,26 @@ else
     # jelas kalau tetap tidak konek (bukan diam-diam gagal). Output audio
     # HANYA lewat Bluetooth (tidak ada fallback ke audio lokal PC).
     if ! bluetoothctl info "$MAC_SPEAKER" | grep -q "Connected: yes"; then
-        echo "$(date '+%Y-%m-%d %H:%M:%S') - [CRITICAL] - $NAMA GAGAL DIPUTAR: Bluetooth speaker tidak terhubung. Cek ${DIR_SKRIP}/pasang_bt.sh" >> "$LOG_FILE"
+        catat "[CRITICAL] - $NAMA GAGAL DIPUTAR: Bluetooth speaker tidak terhubung. Cek ${DIR_SKRIP}/pasang_bt.sh"
     fi
 
-    # PERBAIKAN (jaga-jaga): lepas paksa sisa proses aplay -D bluealsa
-    # kalau ada, sebelum mpv coba membuka PCM yang sama.
+    # PERBAIKAN (jaga-jaga): lepas paksa sisa proses aplay yang masih
+    # menahan PCM bluealsa, kalau ada, sebelum mpv coba membuka PCM yang sama.
     pkill -f "aplay -q -D bluealsa" 2>/dev/null
     sleep 0.3
-
-    MPV_AUDIO_DEVICE="alsa/bluealsa"
 fi
 
-amixer -q sset Master 100% 2>/dev/null
+# PERBAIKAN (V15): satu device untuk semua mode -- rute sesungguhnya
+# ditentukan oleh /etc/asound.conf (dikelola atur_output_audio.sh).
+MPV_AUDIO_DEVICE="alsa/default"
+
+# PERBAIKAN (V15c): kontrol mixer 'Master' dikonfirmasi ADA di hardware
+# asli (lihat `amixer scontrols`), jadi satu panggilan gabungan ini
+# cukup, tidak perlu mencoba nama kontrol lain yang tidak ada.
+amixer -q sset Master 100% unmute 2>/dev/null
 
 DAFTAR=$(printf '%s, ' "${FILES[@]##*/}")
-echo "$(date '+%Y-%m-%d %H:%M:%S') - [PLAY] - Memutar $NAMA: ${DAFTAR%, } (Volume 80%, output: ${AUDIO_OUTPUT})" >> "$LOG_FILE"
+catat "[PLAY] - Memutar $NAMA: ${DAFTAR%, } (Volume 80%, output: ${AUDIO_OUTPUT})"
 
 # PERBAIKAN (V14): --audio-fallback-to-ids BUKAN opsi valid di mpv (lihat
 # `mpv --list-options`), menyebabkan mpv Fatal Error dan TIDAK PERNAH
@@ -677,17 +820,28 @@ MPV_EXIT=$?
 # Senin, otomatis pause bel jam pelajaran Senin berikutnya (menunggu
 # upacara selesai).
 if [ "$KUNCI" = "jam_ke_0_senin" ] && [ "$MPV_EXIT" -eq 0 ]; then
-    touch "${DIR_FLAG}/pause_senin.flag"
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - [INFO] - Bel jam pelajaran Senin di-pause otomatis setelah bel masuk (menunggu upacara selesai). Jalankan lanjutkan_bel_senin.sh setelah upacara usai." >> "$LOG_FILE"
+    date +%s > "${DIR_FLAG}/pause_senin.flag"
+    catat "[INFO] - Bel jam pelajaran Senin di-pause otomatis setelah bel masuk (menunggu upacara selesai, maks 90 menit). Jalankan lanjutkan_bel_senin.sh setelah upacara usai."
 fi
 
 # PERBAIKAN: catat baris log jelas SUKSES/GAGAL setelah playback selesai,
 # lengkap dengan jam selesai dan nama bel -- supaya mudah dicari lewat
 # grep tanpa perlu menebak dari banyak baris debug bluealsa-pcm.
 if [ "$MPV_EXIT" -eq 0 ]; then
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - [SUKSES] - $NAMA berhasil diputar (selesai jam $(date '+%H:%M'))." >> "$LOG_FILE"
+    catat "[SUKSES] - $NAMA berhasil diputar (selesai jam $(date '+%H:%M'))."
 else
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - [GAGAL] - $NAMA GAGAL diputar (mpv exit code ${MPV_EXIT}). Cek koneksi Bluetooth/speaker!" >> "$LOG_FILE"
+    # PERBAIKAN: terjemahkan exit code mpv secara akurat (sesuai
+    # dokumentasi resmi mpv), bukan tebakan generik. Exit 4 itu KELUAR
+    # KARENA SINYAL (mis. Ctrl+C) -- BUKAN error device/koneksi, jadi
+    # jangan diarahkan ke "cek Bluetooth" yang menyesatkan.
+    case "$MPV_EXIT" in
+        1) KETERANGAN_EXIT="mpv gagal inisialisasi (opsi tidak dikenal, atau device audio \"${MPV_AUDIO_DEVICE}\" tidak valid/tidak ditemukan)" ;;
+        2) KETERANGAN_EXIT="file audio tidak bisa diputar (format tidak didukung, file rusak, atau file tidak ditemukan)" ;;
+        3) KETERANGAN_EXIT="sebagian file berhasil diputar, sebagian gagal" ;;
+        4) KETERANGAN_EXIT="mpv dihentikan paksa oleh sinyal (mis. Ctrl+C) -- BUKAN error device, kemungkinan proses ter-interrupt" ;;
+        *) KETERANGAN_EXIT="kode keluar tidak dikenal" ;;
+    esac
+    catat "[GAGAL] - $NAMA GAGAL diputar (mpv exit code ${MPV_EXIT}: ${KETERANGAN_EXIT})."
 fi
 EOF
 
@@ -708,37 +862,305 @@ echo "Bel hari Senin sudah dilanjutkan. Bel jam pelajaran berikutnya akan berbun
 EOF
 chmod +x ${DIR_BASE}/lanjutkan_bel_senin.sh
 
-# Skrip atur_output_audio.sh
+# Skrip atur_output_audio.sh (VERSION 15 -- ROUTING ALSA DINAMIS)
+# ---------------------------------------------------------------------
+# PERBAIKAN UTAMA V15 dibanding versi lama:
+#  1. Skrip ini SEKARANG MENULIS ULANG /etc/asound.conf setiap kali
+#     output diganti, mengarahkan pcm.!default sistem langsung ke
+#     bluealsa (mode bluetooth) atau dmix di atas card analog (mode
+#     line_out). Versi lama HANYA mengganti variabel AUDIO_OUTPUT di
+#     config tanpa pernah menyentuh routing ALSA -- makanya switching
+#     dulu tidak benar-benar berpindah kalau ada proses lama nyantol.
+#  2. AUTO-ELEVATE: skrip otomatis 'sudo' dirinya sendiri kalau
+#     dijalankan user biasa, karena menulis /etc/asound.conf & memutus
+#     Bluetooth butuh root.
+#  3. CLEAN DISCONNECT: pindah ke line_out otomatis memutus Bluetooth
+#     yang aktif. Pindah ke bluetooth otomatis sambung ulang.
+#  4. UNMUTE HARDWARE: pindah ke line_out otomatis unmute penuh semua
+#     channel analog (Master, Headphone, Speaker, Front, PCM).
+#  5. Deteksi card analog PAKAI NAMA KARTU (bukan nomor index) supaya
+#     tidak meleset kalau nomor kartu bergeser setelah reboot.
 cat <<'EOF' > ${DIR_BASE}/atur_output_audio.sh
 #!/bin/bash
+# =====================================================================
+# atur_output_audio.sh (VERSION 15)
+# Switching Bluetooth <-> Line Out yang mulus, bersih, dan instan lewat
+# routing ALSA dinamis (pcm.!default di /etc/asound.conf). Setiap kali
+# skrip ini dijalankan, /etc/asound.conf ditulis ulang -- dan karena
+# aplikasi ALSA membaca file itu setiap kali membuka PCM, pemutaran
+# BERIKUTNYA otomatis lewat output baru TANPA perlu restart apapun.
+# =====================================================================
+
+# --- AUTO-ELEVATE ---------------------------------------------------
+# Menulis /etc/asound.conf & memutus Bluetooth butuh root. Kalau
+# dijalankan user biasa, otomatis re-exec pakai sudo. Sudah didaftarkan
+# NOPASSWD di /etc/sudoers.d/otomasi-audio-rfkill supaya instan.
+# PERBAIKAN (V15b): pakai PATH ABSOLUT (bukan $0 mentah) saat re-exec --
+# kalau dipanggil sebagai path relatif (mis. "./atur_output_audio.sh"),
+# sudoers yang mendaftarkan path absolut bisa tidak cocok dan malah
+# minta password / ditolak.
+if [ "$(id -u)" -ne 0 ]; then
+    SKRIP_ABSOLUT="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+    exec sudo "$SKRIP_ABSOLUT" "$@"
+fi
+
 DIR_SKRIP="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONF="${DIR_SKRIP}/sekolah.conf"
 source "$CONF"
 
+WAV_TES="/usr/share/sounds/alsa/Front_Center.wav"
+ASOUND_CONF="/etc/asound.conf"
+
+catat_log() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$LOG_FILE"
+}
+
+# ---------------------------------------------------------------------
+# PERBAIKAN (V15b): GUARD ANTI-TABRAKAN DENGAN BEL YANG SEDANG DIPUTAR.
+# putar_audio.sh memegang lock /tmp/putar_audio.lock selama mpv main.
+# Kalau kita menulis ulang /etc/asound.conf & memutus Bluetooth SAAT bel
+# sedang berbunyi, bel itu bisa terputus mendadak di tengah jalan. Jadi
+# sebelum benar-benar switching, coba tunggu (maks 12 detik, cukup untuk
+# bel pendek) sampai lock itu bebas. Kalau tetap terkunci (bel panjang
+# seperti lagu/mars), TETAP lanjut switching (jangan sampai admin
+# menekan tombol dan tidak terjadi apa-apa), tapi beri peringatan jelas.
+tunggu_giliran_aman() {
+    exec 202>/tmp/putar_audio.lock
+    if flock -w 12 202; then
+        return 0
+    else
+        echo "[PERINGATAN] Ada bel yang sedang diputar & masih berlangsung setelah 12"
+        echo "             detik menunggu. Tetap melanjutkan switching -- bel yang"
+        echo "             sedang main mungkin terpotong."
+        catat_log "[PERINGATAN] - Switching output dipaksa lanjut walau ada bel yang masih diputar (lock tidak bebas dalam 12 detik)."
+        return 1
+    fi
+}
+
+# ---------------------------------------------------------------------
+# Deteksi ID/nama kartu suara analog Lenovo S200z secara otomatis, PAKAI
+# NAMA KARTU (mis. "PCH"), BUKAN nomor index -- supaya tetap benar walau
+# nomor kartu bergeser setelah reboot/kernel update. Kartu virtual HDMI
+# disingkirkan dari kandidat.
+#
+# PERBAIKAN (V15c - BUG KRITIS): versi sebelumnya salah mengambil NAMA
+# PANJANG kartu di dalam kurung siku (mis. "HDA Intel PCH", ada spasi)
+# alih-alih ID PENDEK-nya (mis. "PCH"). Kalau dipakai sebagai
+# "hw:HDA Intel PCH,0", ALSA GAGAL membuka device (string tidak valid
+# berisi spasi) -- line_out tidak akan pernah bunyi walau kartu
+# terdeteksi. Selain itu, versi sebelumnya memakai match(str, re, arr)
+# 3-argumen yang HANYA didukung gawk, padahal /usr/bin/awk default di
+# instalasi Debian minimal biasanya symlink ke mawk (TIDAK mendukung
+# fitur itu) -- fungsi bisa gagal total tanpa pesan error yang jelas di
+# sebagian sistem. Sekarang ditulis ulang pakai sub()/print POSIX biasa
+# yang portable di awk manapun (mawk maupun gawk), dan mengambil ID
+# pendek yang benar dari sebelum tanda "[".
+# ---------------------------------------------------------------------
+deteksi_card_analog() {
+    aplay -l 2>/dev/null | awk '
+        /^card/ && !/HDMI/ {
+            sub(/^card [0-9]+: /, "")
+            sub(/ \[.*/, "")
+            print
+            exit
+        }'
+}
+
+# PERBAIKAN (V15c - OPTIMASI + BUG): versi sebelumnya menebak 5 nama
+# kontrol mixer (Master, Headphone, Speaker, Front, PCM) tanpa mengecek
+# yang mana yang BENAR-BENAR ADA di hardware. Di Lenovo S200z asli
+# (dikonfirmasi lewat `amixer scontrols`), HANYA ADA 'Master' dan
+# 'Capture' -- 4 dari 5 percobaan sebelumnya selalu gagal diam-diam
+# (disuppress 2>/dev/null), membuang proses amixer tanpa hasil. Sekarang
+# kontrol yang ada dideteksi SEKALI lewat `amixer scontrols`, lalu hanya
+# kontrol PLAYBACK yang relevan (bukan 'Capture'/mic) yang disentuh --
+# dan volume+unmute digabung jadi SATU panggilan amixer per kontrol
+# (bukan dua) untuk mengurangi overhead proses.
+unmute_semua_channel() {
+    local card_arg=()
+    [ -n "$1" ] && card_arg=(-c "$1")
+
+    local daftar_kontrol
+    daftar_kontrol=$(amixer "${card_arg[@]}" scontrols 2>/dev/null | sed -n "s/.*'\([^']*\)'.*/\1/p")
+
+    local kontrol
+    while IFS= read -r kontrol; do
+        [ -z "$kontrol" ] && continue
+        # 'Capture' adalah jalur mikrofon/input, bukan playback -- jangan
+        # disentuh di sini (di luar tanggung jawab fungsi unmute output).
+        [ "$kontrol" = "Capture" ] && continue
+        amixer -q "${card_arg[@]}" sset "$kontrol" 100% unmute 2>/dev/null
+    done <<< "$daftar_kontrol"
+}
+
+# Clean disconnect: putuskan Bluetooth kalau sedang aktif, supaya
+# speaker bebas dipakai perangkat lain saat kita pindah ke line_out.
+putus_bluetooth_jika_aktif() {
+    if bluetoothctl info "$MAC_SPEAKER" 2>/dev/null | grep -q "Connected: yes"; then
+        echo "Memutus koneksi Bluetooth speaker (${MAC_SPEAKER})..."
+        bluetoothctl disconnect "$MAC_SPEAKER" >/dev/null 2>&1
+        sleep 1
+    fi
+}
+
+# PERBAIKAN (V15c - KEAMANAN): validasi CARD_ID sebelum dipakai menulis
+# /etc/asound.conf & sed sekolah.conf. ID kartu ALSA yang sah hanya
+# terdiri dari huruf/angka/underscore/titik (mis. "PCH", "sofhdadsp").
+# Tanpa validasi ini, argumen ganjil/salah ketik (atau -- kalau suatu
+# saat skrip dipanggil dari konteks lain dengan input tak terduga --
+# argumen yang disusupi karakter aneh) bisa merusak isi asound.conf atau
+# menyisipkan baris konfigurasi ALSA yang tidak diinginkan.
+validasi_card_id() {
+    [[ "$1" =~ ^[A-Za-z0-9_.-]+$ ]]
+}
+
+# PERBAIKAN (V15c - DRY): satu fungsi tes bunyi dipakai ulang oleh mode
+# bluetooth, line_out, dan test -- sebelumnya 3 blok kode nyaris identik
+# ditulis berulang (melanggar DRY, dan kalau ada bug di satu blok, mudah
+# lupa memperbaiki blok lainnya).
+tes_bunyi() {
+    local label="$1" file_log="$2" batas_waktu="${3:-5}"
+    if [ ! -f "$WAV_TES" ]; then
+        echo "[PERINGATAN] File tes ${WAV_TES} tidak ada, lewati tes bunyi otomatis."
+        return 0
+    fi
+    echo "Menguji output ${label} (harus terdengar bunyi singkat)..."
+    if timeout "$batas_waktu" aplay -D default "$WAV_TES" >"$file_log" 2>&1; then
+        echo "[OK] ${label} berhasil mengeluarkan suara."
+        return 0
+    else
+        echo "[PERINGATAN] Tes bunyi gagal/tidak bisa dipastikan, cek ${file_log}"
+        return 1
+    fi
+}
+
+tulis_asound_bluetooth() {
+    [ -f "$ASOUND_CONF" ] && cp -f "$ASOUND_CONF" "${ASOUND_CONF}.bak.$(date +%s)" 2>/dev/null
+    cat <<CONFEOF > "$ASOUND_CONF"
+# ======================================================================
+# GENERATED OTOMATIS oleh atur_output_audio.sh -- JANGAN EDIT MANUAL.
+# Mode aktif saat ini: BLUETOOTH (${MAC_SPEAKER})
+# ======================================================================
+pcm.!default {
+    type plug
+    slave.pcm "bt_speaker_aktif"
+}
+pcm.bt_speaker_aktif {
+    type bluealsa
+    device "${MAC_SPEAKER}"
+    profile "a2dp"
+}
+ctl.!default {
+    type bluealsa
+}
+CONFEOF
+}
+
+tulis_asound_lineout() {
+    local card_id="$1"
+    [ -f "$ASOUND_CONF" ] && cp -f "$ASOUND_CONF" "${ASOUND_CONF}.bak.$(date +%s)" 2>/dev/null
+    cat <<CONFEOF > "$ASOUND_CONF"
+# ======================================================================
+# GENERATED OTOMATIS oleh atur_output_audio.sh -- JANGAN EDIT MANUAL.
+# Mode aktif saat ini: LINE OUT / ANALOG JACK (card: ${card_id})
+# dmix dipakai supaya beberapa proses audio beruntun tidak saling
+# rebutan device ("Device or resource busy").
+# ======================================================================
+pcm.!default {
+    type plug
+    slave.pcm "line_out_aktif"
+}
+pcm.line_out_aktif {
+    type dmix
+    ipc_key 1024
+    # PERBAIKAN (V15c - KEAMANAN): 0666 (world-writable) sebelumnya
+    # mengizinkan SEMBARANG user/proses lokal di sistem ini menulis ke
+    # shared-memory ring buffer dmix -- celah kecil tapi nyata untuk
+    # tamper/DoS terhadap audio yang sedang diputar. Diketatkan ke 0600
+    # (owner-only) karena semua proses pemutaran (cron, systemd daemon,
+    # manual) SELALU berjalan sebagai user OS yang sama.
+    ipc_perm 0600
+    slave {
+        pcm "hw:${card_id},0"
+        rate 48000
+        period_time 0
+        period_size 1024
+        buffer_size 4096
+    }
+}
+ctl.!default {
+    type hw
+    card ${card_id}
+}
+CONFEOF
+}
+
 case "$1" in
     bluetooth)
+        echo "Menyambungkan ulang ke speaker Bluetooth (${MAC_SPEAKER})..."
+        "${DIR_SKRIP}/sambung_bt.sh"
+        if ! bluetoothctl info "$MAC_SPEAKER" | grep -q "Connected: yes"; then
+            echo "[GAGAL] Speaker Bluetooth tidak terhubung. Output TIDAK diubah -- cek dulu"
+            echo "        koneksi (${DIR_SKRIP}/pasang_bt.sh) sebelum pindah ke Bluetooth."
+            catat_log "[CRITICAL] - Gagal pindah ke Bluetooth: speaker tidak terhubung."
+            exit 1
+        fi
+        tunggu_giliran_aman
+        tulis_asound_bluetooth
         sed -i 's/^AUDIO_OUTPUT=.*/AUDIO_OUTPUT="bluetooth"/' "$CONF"
-        echo "$(date '+%Y-%m-%d %H:%M:%S') - [INFO] - Output audio diubah ke BLUETOOTH (${MAC_SPEAKER})." >> "$LOG_FILE"
-        echo "Output audio diubah ke: BLUETOOTH (${MAC_SPEAKER})"
+        catat_log "[SUKSES] - Output audio diubah ke BLUETOOTH (${MAC_SPEAKER}); pcm.!default direute ke bluealsa."
+        echo "[OK] Output audio diubah ke: BLUETOOTH (${MAC_SPEAKER})"
+        echo "     (berlaku instan untuk pemutaran audio berikutnya)"
+        tes_bunyi "Bluetooth (${MAC_SPEAKER})" /tmp/tes_bt.log 8
         ;;
     line_out|lineout)
-        sed -i 's/^AUDIO_OUTPUT=.*/AUDIO_OUTPUT="line_out"/' "$CONF"
-        echo "$(date '+%Y-%m-%d %H:%M:%S') - [INFO] - Output audio diubah ke LINE OUT (${AUDIO_DEVICE_LINEOUT})." >> "$LOG_FILE"
-        echo "Output audio diubah ke: LINE OUT (${AUDIO_DEVICE_LINEOUT})"
-        echo "Pastikan speaker/amplifier sudah tersambung ke jack audio PC."
-        echo "Kalau perlu ganti device ALSA-nya, edit AUDIO_DEVICE_LINEOUT di ${CONF}"
-        echo "(cek nama device yang benar dengan: aplay -l)"
+        CARD_ID="${2:-$(deteksi_card_analog)}"
+        if [ -z "$CARD_ID" ]; then
+            echo "[GAGAL] Tidak ada kartu suara analog terdeteksi. Cek manual: aplay -l"
+            catat_log "[CRITICAL] - Gagal pindah ke line_out: tidak ada card analog terdeteksi."
+            exit 1
+        fi
+        if ! validasi_card_id "$CARD_ID"; then
+            echo "[GAGAL] ID kartu '${CARD_ID}' tidak valid (hanya huruf/angka/underscore/titik/dash)."
+            catat_log "[CRITICAL] - Gagal pindah ke line_out: CARD_ID '${CARD_ID}' tidak lolos validasi."
+            exit 1
+        fi
+        tunggu_giliran_aman
+        putus_bluetooth_jika_aktif
+        tulis_asound_lineout "$CARD_ID"
+        unmute_semua_channel "$CARD_ID"
+        tes_bunyi "line out (card ${CARD_ID})" /tmp/tes_lineout.log 5
+        sed -i "s/^AUDIO_OUTPUT=.*/AUDIO_OUTPUT=\"line_out\"/" "$CONF"
+        sed -i "s|^AUDIO_DEVICE_LINEOUT=.*|AUDIO_DEVICE_LINEOUT=\"hw:${CARD_ID},0\"|" "$CONF"
+        catat_log "[SUKSES] - Output audio diubah ke LINE OUT (card ${CARD_ID}); Bluetooth diputus, pcm.!default direute ke dmix, semua channel playback di-unmute."
+        echo "[OK] Output audio diubah ke: LINE OUT (hw:${CARD_ID},0)"
+        echo "     (berlaku instan untuk pemutaran audio berikutnya)"
+        ;;
+    test)
+        tes_bunyi "default ALSA saat ini (mode: ${AUDIO_OUTPUT})" /tmp/tes_default.log 5
         ;;
     status)
         echo "Output audio saat ini : ${AUDIO_OUTPUT}"
-        if [ "$AUDIO_OUTPUT" = "line_out" ]; then
-            echo "Device ALSA           : ${AUDIO_DEVICE_LINEOUT}"
+        echo "--- Isi /etc/asound.conf aktif ---"
+        if [ -f "$ASOUND_CONF" ]; then
+            cat "$ASOUND_CONF"
         else
+            echo "(belum ada -- jalankan 'bluetooth' atau 'line_out' dulu)"
+        fi
+        echo "-----------------------------------"
+        if [ "$AUDIO_OUTPUT" = "bluetooth" ]; then
             echo "MAC Speaker Bluetooth : ${MAC_SPEAKER}"
+            bluetoothctl info "$MAC_SPEAKER" 2>/dev/null | grep -E "Connected|Paired"
+        else
+            echo "Device ALSA           : ${AUDIO_DEVICE_LINEOUT}"
         fi
         ;;
     *)
-        echo "Pemakaian: $0 {bluetooth|line_out|status}"
+        echo "Pemakaian: sudo $0 {bluetooth|line_out [card_id]|status|test}"
+        echo "  bluetooth        - pindah ke speaker Bluetooth (sambung ulang otomatis)"
+        echo "  line_out [card]  - pindah ke jack analog (auto-deteksi card kalau tidak disebut)"
+        echo "  status           - lihat output, isi asound.conf & status koneksi saat ini"
+        echo "  test             - tes bunyi singkat lewat output default yang sedang aktif"
         exit 1
         ;;
 esac
@@ -886,6 +1308,14 @@ while true; do
                 if [ "$tunggu" -gt 0 ]; then
                     echo "$(date '+%Y-%m-%d %H:%M:%S') - [STANDBY] - $nama menunggu ${tunggu} detik." >> "$LOG_FILE"
                     sleep "$tunggu"
+                    "${DIR_SKRIP}/putar_audio.sh" "$kunci" "$nama" "$file_audio"
+                elif [ "$tunggu" -gt -1800 ]; then
+                    # PERBAIKAN: kalau baru saja lewat (<30 menit, mis.
+                    # daemon sempat restart karena mati listrik), tetap
+                    # putar telat -- lebih baik telat daripada tidak
+                    # bunyi sama sekali. Kalau sudah lewat jauh (>30
+                    # menit), baru benar-benar dilewati di bawah.
+                    echo "$(date '+%Y-%m-%d %H:%M:%S') - [CATCHUP] - $nama baru lewat $(( -tunggu )) detik lalu, tetap diputar (telat)." >> "$LOG_FILE"
                     "${DIR_SKRIP}/putar_audio.sh" "$kunci" "$nama" "$file_audio"
                 else
                     echo "$(date '+%Y-%m-%d %H:%M:%S') - [SKIP] - $nama sudah lewat, dilewati." >> "$LOG_FILE"
@@ -1282,6 +1712,36 @@ echo -e "\n=== SINKRONISASI WAKTU ==="
 timedatectl show -p NTPSynchronized --value
 echo -e "\n=== SISA RUANG DISK ==="
 df -h "${DIR_BASE}" | tail -1
+echo -e "\n=== PEMULIHAN OTOMATIS (INTEGRITAS SISTEM) ==="
+systemctl is-active integritas-sistem.timer 2>/dev/null || echo "TIDAK AKTIF (perlu dicek manual)"
+if [ -f /var/backups/audio-school-system/.terakhir_pemulihan ]; then
+    T=$(cat /var/backups/audio-school-system/.terakhir_pemulihan 2>/dev/null)
+    if [[ "$T" =~ ^[0-9]+$ ]]; then
+        echo "PERNAH memicu pemulihan otomatis pada: $(date -d @${T} '+%Y-%m-%d %H:%M:%S' 2>/dev/null)"
+    fi
+fi
+
+echo -e "\n=== STATUS BEL SENIN (UPACARA) ==="
+if [ -f "${DIR_FLAG}/pause_senin.flag" ]; then
+    PAUSE_SEJAK=$(cat "${DIR_FLAG}/pause_senin.flag" 2>/dev/null)
+    if [[ "$PAUSE_SEJAK" =~ ^[0-9]+$ ]]; then
+        MENIT_LALU=$(( ($(date +%s) - PAUSE_SEJAK) / 60 ))
+        echo "SEDANG DI-PAUSE sejak ${MENIT_LALU} menit lalu (auto-batal di 90 menit). Jalankan lanjutkan_bel_senin.sh kalau upacara sudah selesai."
+    else
+        echo "SEDANG DI-PAUSE (waktu mulai tidak diketahui)."
+    fi
+else
+    echo "Normal (tidak di-pause)."
+fi
+
+echo -e "\n=== OUTPUT AUDIO ==="
+echo -n "Mode saat ini: ${AUDIO_OUTPUT}"
+if [ "$AUDIO_OUTPUT" = "line_out" ]; then
+    echo " (device: ${AUDIO_DEVICE_LINEOUT})"
+else
+    echo " (speaker: ${MAC_SPEAKER})"
+fi
+
 echo -e "\n=== STATUS AKTIVASI FITUR AUDIO ==="
 "${DIR_SKRIP}/mode_sekolah.sh" status
 EOF
@@ -1327,6 +1787,18 @@ mkdir -p "${DIR_BASE}/backup"
 TANGGAL=$(date +%Y%m%d)
 tar -czf ${DIR_BASE}/backup/config_${TANGGAL}.tar.gz ${DIR_BASE}/*.sh ${DIR_BASE}/*.conf 2>/dev/null
 find ${DIR_BASE}/backup -name "*.tar.gz" -mtime +14 -delete
+
+# PERBAIKAN: salin juga ke /var/backups (DI LUAR /home) supaya kalau
+# /home hilang total, cek_integritas_sistem.sh masih punya jadwal
+# harian/ujian terakhir untuk dipulihkan (bukan cuma default installer).
+BACKUP_LUAR="/var/backups/audio-school-system"
+if [ -d "$BACKUP_LUAR" ]; then
+    cp -f "${DIR_BASE}/jadwal_harian.conf" "${BACKUP_LUAR}/jadwal_harian.conf.bak" 2>/dev/null
+    cp -f "${DIR_BASE}/jadwal_ujian.conf" "${BACKUP_LUAR}/jadwal_ujian.conf.bak" 2>/dev/null
+    cp -f "${DIR_BASE}/sekolah.conf" "${BACKUP_LUAR}/sekolah.conf.bak" 2>/dev/null
+    ls "${DIR_BASE}/audio/" > "${BACKUP_LUAR}/daftar_file_audio.txt" 2>/dev/null
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - [INFO] - Backup config tersalin ke ${BACKUP_LUAR} (di luar /home)." >> "$LOG_FILE"
+fi
 EOF
 
 # Berikan hak akses eksekusi ke semua berkas skrip baru
@@ -1388,6 +1860,180 @@ User=${USER_SISTEM}
 WantedBy=multi-user.target
 EOF
 
+# PERBAIKAN: cek_integritas_sistem.sh -- pemeriksa & pemulihan otomatis.
+# SENGAJA disimpan di /usr/local/bin (BUKAN di ${DIR_BASE} / /home),
+# supaya kalau /home/${USER_SISTEM} bersih total (crash filesystem,
+# corrupt, dsb -- pernah terjadi nyata di lapangan), script penyelamat
+# ini TIDAK IKUT HILANG dan tetap bisa jalan mengunduh ulang dari GitHub.
+cat <<'INTEOF' > /usr/local/bin/cek_integritas_sistem.sh
+#!/bin/bash
+# Pemeriksa integritas + pemulihan otomatis sistem otomasi audio sekolah.
+# Kalau semua file/folder kunci di /home/<user> masih ada -> tidak
+# melakukan apapun (silent, cukup catat log ringan). Kalau MAYORITAS
+# hilang (indikasi /home bersih total, bukan cuma 1 file kehapus tidak
+# sengaja) -> otomatis unduh ulang dari GitHub & jalankan installer.
+
+LOG_FILE="/var/log/otomasi_audio.log"
+RECOVERY_CONF="/etc/audio-school-system/recovery.conf"
+BACKUP_LUAR="/var/backups/audio-school-system"
+LOCK_COOLDOWN="/var/backups/audio-school-system/.terakhir_pemulihan"
+GITHUB_TARBALL="https://github.com/saroppudin/audio-school-system/archive/refs/heads/main.tar.gz"
+COOLDOWN_DETIK=3600   # jangan coba pulihkan lagi kalau baru dicoba <1 jam lalu
+
+if [ ! -f "$RECOVERY_CONF" ]; then
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - [WARNING] - cek_integritas_sistem: recovery.conf tidak ditemukan, lewati pemeriksaan." >> "$LOG_FILE"
+    exit 0
+fi
+source "$RECOVERY_CONF"
+DIR_BASE="/home/${USER_SISTEM}"
+
+# Daftar penanda kunci -- kalau MAYORITAS ini hilang, anggap /home wipe total.
+PENANDA=(
+    "${DIR_BASE}/sekolah.conf"
+    "${DIR_BASE}/putar_audio.sh"
+    "${DIR_BASE}/cek_harian.sh"
+    "${DIR_BASE}/cek_ujian.sh"
+    "${DIR_BASE}/sambung_bt.sh"
+    "${DIR_BASE}/pasang_bt.sh"
+    "${DIR_BASE}/tahrim_daemon.sh"
+    "${DIR_BASE}/mode_sekolah.sh"
+    "${DIR_BASE}/kelola_harian.sh"
+    "${DIR_BASE}/kelola_ujian.sh"
+    "${DIR_BASE}/jadwal_harian.conf"
+    "${DIR_BASE}/jadwal_ujian.conf"
+    "${DIR_BASE}/audio"
+)
+HILANG=0
+for p in "${PENANDA[@]}"; do
+    [ -e "$p" ] || HILANG=$((HILANG + 1))
+done
+TOTAL=${#PENANDA[@]}
+
+# Kurang dari 70% hilang -> anggap cuma kejadian kecil (mis. 1-2 file
+# kehapus tidak sengaja), BUKAN wipe total. Catat CRITICAL saja, JANGAN
+# auto-reinstall (supaya tidak menimpa kustomisasi yang masih ada).
+AMBANG=$(( TOTAL * 70 / 100 ))
+if [ "$HILANG" -lt "$AMBANG" ]; then
+    if [ "$HILANG" -gt 0 ]; then
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - [CRITICAL] - cek_integritas_sistem: ${HILANG}/${TOTAL} penanda hilang (di bawah ambang wipe-total). Cek manual, TIDAK auto-reinstall." >> "$LOG_FILE"
+    fi
+    exit 0
+fi
+
+# --- Dari titik ini: dianggap /home wipe total ---
+
+# Cooldown supaya tidak reinstall berulang-ulang kalau ada masalah terus.
+if [ -f "$LOCK_COOLDOWN" ]; then
+    TERAKHIR=$(cat "$LOCK_COOLDOWN" 2>/dev/null)
+    SEKARANG=$(date +%s)
+    if [[ "$TERAKHIR" =~ ^[0-9]+$ ]] && [ $(( SEKARANG - TERAKHIR )) -lt "$COOLDOWN_DETIK" ]; then
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - [WARNING] - cek_integritas_sistem: wipe total terdeteksi lagi tapi masih cooldown (< 1 jam sejak percobaan terakhir). Menunggu." >> "$LOG_FILE"
+        exit 0
+    fi
+fi
+mkdir -p "$BACKUP_LUAR"
+date +%s > "$LOCK_COOLDOWN"
+
+echo "$(date '+%Y-%m-%d %H:%M:%S') - [CRITICAL] - cek_integritas_sistem: ${HILANG}/${TOTAL} penanda hilang -- WIPE TOTAL terdeteksi di ${DIR_BASE}. Memulai pemulihan otomatis dari GitHub..." >> "$LOG_FILE"
+
+# Cek internet dulu
+if ! curl -fsSL --max-time 10 -o /dev/null https://github.com; then
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - [CRITICAL] - cek_integritas_sistem: tidak ada koneksi internet, pemulihan otomatis DIBATALKAN. Coba lagi nanti atau pulihkan manual." >> "$LOG_FILE"
+    exit 1
+fi
+
+TMPDIR=$(mktemp -d)
+if ! curl -fsSL "$GITHUB_TARBALL" -o "${TMPDIR}/repo.tar.gz"; then
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - [CRITICAL] - cek_integritas_sistem: gagal unduh dari GitHub. Pemulihan otomatis DIBATALKAN." >> "$LOG_FILE"
+    rm -rf "$TMPDIR"
+    exit 1
+fi
+tar -xzf "${TMPDIR}/repo.tar.gz" -C "$TMPDIR"
+INSTALLER=$(find "$TMPDIR" -iname "Installer-bel-v*.sh" | head -1)
+if [ -z "$INSTALLER" ]; then
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - [CRITICAL] - cek_integritas_sistem: Installer-bel-v*.sh tidak ditemukan di dalam repo yang diunduh. Pemulihan otomatis DIBATALKAN." >> "$LOG_FILE"
+    rm -rf "$TMPDIR"
+    exit 1
+fi
+
+# Suntikkan kembali config lama (dari /etc, yang tidak ikut hilang) ke
+# installer yang baru diunduh, sebelum dijalankan.
+sed -i "s/^USER_SISTEM=.*/USER_SISTEM=\"${USER_SISTEM}\"/" "$INSTALLER"
+sed -i "s/^NAMA_SEKOLAH=.*/NAMA_SEKOLAH=\"${NAMA_SEKOLAH}\"/" "$INSTALLER"
+sed -i "s/^GARIS_LINTANG=.*/GARIS_LINTANG=\"${GARIS_LINTANG}\"/" "$INSTALLER"
+sed -i "s/^GARIS_BUJUR=.*/GARIS_BUJUR=\"${GARIS_BUJUR}\"/" "$INSTALLER"
+sed -i "s/^MAC_SPEAKER=.*/MAC_SPEAKER=\"${MAC_SPEAKER}\"/" "$INSTALLER"
+
+chmod +x "$INSTALLER"
+echo "$(date '+%Y-%m-%d %H:%M:%S') - [INFO] - cek_integritas_sistem: menjalankan installer hasil unduhan (${INSTALLER})..." >> "$LOG_FILE"
+bash "$INSTALLER" >> "$LOG_FILE" 2>&1
+INSTALL_EXIT=$?
+
+if [ "$INSTALL_EXIT" -ne 0 ]; then
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - [CRITICAL] - cek_integritas_sistem: installer selesai dengan error (exit ${INSTALL_EXIT}). Perlu dicek manual." >> "$LOG_FILE"
+    rm -rf "$TMPDIR"
+    exit 1
+fi
+
+# Pulihkan jadwal harian/ujian TERAKHIR (bukan default installer) kalau
+# ada salinannya di backup luar.
+[ -f "${BACKUP_LUAR}/jadwal_harian.conf.bak" ] && cp -f "${BACKUP_LUAR}/jadwal_harian.conf.bak" "${DIR_BASE}/jadwal_harian.conf"
+[ -f "${BACKUP_LUAR}/jadwal_ujian.conf.bak" ] && cp -f "${BACKUP_LUAR}/jadwal_ujian.conf.bak" "${DIR_BASE}/jadwal_ujian.conf"
+chown "${USER_SISTEM}:${USER_SISTEM}" "${DIR_BASE}/jadwal_harian.conf" "${DIR_BASE}/jadwal_ujian.conf" 2>/dev/null
+
+# PERBAIKAN: pulihkan juga file audio (.mp3) dari repo GitHub hasil
+# unduhan, kalau memang disimpan di sana (folder audio/ di dalam repo).
+# Cari folder "audio" di dalam hasil ekstrak repo (bukan cuma di root,
+# karena struktur tarball GitHub selalu ada folder pembungkus di awal).
+AUDIO_REPO=$(find "$TMPDIR" -type d -iname "audio" | head -1)
+JUMLAH_AUDIO_DIPULIHKAN=0
+if [ -n "$AUDIO_REPO" ]; then
+    JUMLAH_AUDIO_DIPULIHKAN=$(find "$AUDIO_REPO" -iname "*.mp3" | wc -l)
+    if [ "$JUMLAH_AUDIO_DIPULIHKAN" -gt 0 ]; then
+        cp -f "$AUDIO_REPO"/*.mp3 "${DIR_BASE}/audio/" 2>/dev/null
+        chown "${USER_SISTEM}:${USER_SISTEM}" "${DIR_BASE}"/audio/*.mp3 2>/dev/null
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - [INFO] - cek_integritas_sistem: ${JUMLAH_AUDIO_DIPULIHKAN} file audio (.mp3) berhasil dipulihkan dari GitHub." >> "$LOG_FILE"
+    fi
+fi
+
+echo "$(date '+%Y-%m-%d %H:%M:%S') - [SUKSES] - cek_integritas_sistem: PEMULIHAN OTOMATIS SELESAI. Software, jadwal, dan ${JUMLAH_AUDIO_DIPULIHKAN} file audio sudah dipulihkan." >> "$LOG_FILE"
+if [ "$JUMLAH_AUDIO_DIPULIHKAN" -eq 0 ]; then
+    if [ -f "${BACKUP_LUAR}/daftar_file_audio.txt" ]; then
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - [WARNING] - cek_integritas_sistem: TIDAK ADA file audio di repo GitHub yang diunduh. Cek daftar terakhir di ${BACKUP_LUAR}/daftar_file_audio.txt dan upload ulang manual ke ${DIR_BASE}/audio/." >> "$LOG_FILE"
+    else
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - [WARNING] - cek_integritas_sistem: TIDAK ADA file audio di repo GitHub, dan tidak ada daftar cadangan. Upload ulang manual semua file ke ${DIR_BASE}/audio/." >> "$LOG_FILE"
+    fi
+fi
+
+rm -rf "$TMPDIR"
+INTEOF
+chmod +x /usr/local/bin/cek_integritas_sistem.sh
+
+cat <<EOF > /etc/systemd/system/integritas-sistem.service
+[Unit]
+Description=Cek Integritas Sistem Otomasi Audio (auto-pulih dari GitHub kalau /home wipe total)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/cek_integritas_sistem.sh
+EOF
+
+cat <<EOF > /etc/systemd/system/integritas-sistem.timer
+[Unit]
+Description=Jadwal cek integritas sistem (tiap 15 menit + saat boot)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+
 # Template service alert (BARU V6) - dipanggil otomatis lewat OnFailure=
 # di atas kalau salah satu service benar-benar gagal berulang kali.
 cat <<EOF > /etc/systemd/system/otomasi-audio-alert@.service
@@ -1404,6 +2050,7 @@ jalankan "Reload daemon systemd (service utama)" systemctl daemon-reload
 jalankan "Aktifkan bt-boot-connect.service (oneshot, boot saja)" systemctl enable bt-boot-connect.service
 jalankan "Jalankan bt-boot-connect.service sekarang (reconnect awal)" systemctl start bt-boot-connect.service
 jalankan "Aktifkan tahrim-daemon.service" systemctl enable --now tahrim-daemon.service
+jalankan "Aktifkan integritas-sistem.timer (cek tiap 15 menit + saat boot)" systemctl enable --now integritas-sistem.timer
 
 # --------------------------------------------------------------------
 # 6. INSTALASI MANAJEMEN LOG (LOGROTATE GLOBAL)
@@ -1447,7 +2094,26 @@ jalankan "Memasang jadwal crontab" crontab -u ${USER_SISTEM} /tmp/cron_bak
 rm -f /tmp/cron_bak
 
 # --------------------------------------------------------------------
-# 8. VERIFIKASI AKHIR & RINGKASAN INSTALASI
+# 8. TERAPKAN ROUTING ALSA AWAL (V15)
+# --------------------------------------------------------------------
+# PERBAIKAN (V15): panggil atur_output_audio.sh SEKALI di sini supaya
+# /etc/asound.conf langsung ditulis dengan format routing dinamis yang
+# benar sejak awal (mode default: bluetooth), bukan dibiarkan kosong/
+# format lama sampai admin sadar harus menjalankannya manual. Kalau
+# Bluetooth belum sempat konek (speaker belum di-pairing dsb), skrip ini
+# akan gagal dengan pesan jelas -- TIDAK menghentikan instalasi -- dan
+# admin tinggal menjalankan ulang manual setelah speaker siap.
+echo "[8d/9] Menerapkan routing ALSA awal (/etc/asound.conf) lewat atur_output_audio.sh..."
+if "${DIR_BASE}/atur_output_audio.sh" bluetooth; then
+    echo "  [OK] /etc/asound.conf awal berhasil ditulis untuk mode Bluetooth."
+else
+    echo "  [PERINGATAN] Gagal menerapkan routing awal (kemungkinan Bluetooth belum"
+    echo "  konek). /etc/asound.conf BELUM ada -- jalankan manual setelah speaker"
+    echo "  siap: sudo ${DIR_BASE}/atur_output_audio.sh bluetooth"
+fi
+
+# --------------------------------------------------------------------
+# 9. VERIFIKASI AKHIR & RINGKASAN INSTALASI
 # --------------------------------------------------------------------
 echo "[9/9] Verifikasi akhir & ringkasan instalasi..."
 
@@ -1504,13 +2170,21 @@ echo "  2. Kalau Bluetooth belum siap: sudo ${DIR_BASE}/pasang_bt.sh"
 echo "  3. Cek status sistem  : ${DIR_BASE}/cek_kesehatan.sh"
 echo "  4. Atur jadwal ujian  : ${DIR_BASE}/kelola_ujian.sh"
 echo "  5. Atur mode sekolah  : ${DIR_BASE}/mode_sekolah.sh"
+echo "  6. Ganti output audio : sudo ${DIR_BASE}/atur_output_audio.sh {bluetooth|line_out}"
 echo "----------------------------------------------------"
 echo " Catatan V14:"
-echo "  - Output audio HANYA lewat Bluetooth speaker (tidak ada"
-echo "    fallback ke audio lokal)."
 echo "  - TIDAK ADA LAGI penjaga koneksi 24 jam. Reconnect otomatis"
 echo "    terjadi: (1) sekali saat boot lewat bt-boot-connect.service,"
 echo "    dan (2) on-demand oleh sambung_bt.sh sebelum tiap bel diputar."
 echo "  - Watchdog cek_service.sh berjalan tiap 5 menit lewat cron"
 echo "    untuk memastikan tahrim-daemon.service tetap hidup."
+echo "----------------------------------------------------"
+echo " Catatan V15 (switching output audio):"
+echo "  - Ganti output cukup: sudo ${DIR_BASE}/atur_output_audio.sh bluetooth"
+echo "    atau: sudo ${DIR_BASE}/atur_output_audio.sh line_out"
+echo "  - Switching langsung berlaku instan untuk bel berikutnya (routing"
+echo "    ALSA sistem ditulis ulang ke /etc/asound.conf, tanpa restart)."
+echo "  - Pindah ke line_out otomatis memutus Bluetooth & unmute semua"
+echo "    channel analog. Pindah ke bluetooth otomatis sambung ulang."
+echo "  - Cek status kapan saja: ${DIR_BASE}/atur_output_audio.sh status"
 echo "===================================================="
