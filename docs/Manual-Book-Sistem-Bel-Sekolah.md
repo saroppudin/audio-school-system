@@ -1,11 +1,13 @@
 # Panduan Instalasi & Operasional Sistem Otomasi Audio Sekolah
-### (Installer-bel-v13, revisi V14)
+### (Installer-bel-v15, revisi V15c)
 
-Dokumen ini untuk siapa pun yang akan memasang atau merawat sistem bel otomatis + tarhim + audio Bluetooth di sekolah, menggunakan `Installer-bel-v13.sh`. Ditulis berdasarkan pengalaman instalasi nyata (termasuk troubleshooting yang sudah dilalui), supaya orang lain tidak perlu mengulang proses debugging yang sama.
+Dokumen ini untuk siapa pun yang akan memasang atau merawat sistem bel otomatis + tarhim + audio (Bluetooth **atau** Line Out) di sekolah, menggunakan `Installer-bel-v15.sh`. Ditulis berdasarkan pengalaman instalasi nyata (termasuk troubleshooting yang sudah dilalui), supaya orang lain tidak perlu mengulang proses debugging yang sama.
 
 **Riwayat revisi dokumen ini:**
 - V14 — Penghapusan `anti-putus.service` (loop 24 jam) diganti `bt-boot-connect.service` (oneshot saat boot); perbaikan `/etc/asound.conf`; perbaikan race condition `putar_audio.sh`; penghapusan flag mpv tidak valid.
 - V14 (lanjutan) — `mode_sekolah.sh status` sekarang meringkas semua bel custom jadi satu baris "Bel harian" (kecuali `lagu_pagi`, `indonesia_raya`, `bel_dzuhur` yang tetap tampil sendiri); ditambahkan panduan impor massal jadwal (bagian 8.4).
+- **V15 — Output audio ganda (BARU):** sistem sekarang bisa memutar lewat speaker **Bluetooth** *atau* jack audio analog **Line Out** ke amplifier kabel, lewat satu perintah `atur_output_audio.sh`. Routing ALSA (`/etc/asound.conf`) ditulis ulang secara dinamis setiap kali diganti — format `/etc/asound.conf` **berubah total**, tidak lagi 2 baris `defaults.bluealsa...` seperti versi lama (lihat bagian 5 & 8.5).
+- **V15c — Perbaikan bug switching:** deteksi kartu analog diperbaiki (sebelumnya bisa salah ambil nama panjang kartu berspasi, membuat `line_out` tidak pernah bunyi), portabilitas `awk` diperbaiki (sebelumnya bisa gagal total di `mawk`), unmute kontrol mixer sekarang query hardware asli (bukan menebak nama kontrol).
 
 ---
 
@@ -15,19 +17,23 @@ Sistem ini menjalankan otomatis di Debian:
 - **Bel harian** (lagu pagi, Indonesia Raya, bel dzuhur, dll — jadwal fleksibel per hari)
 - **Bel ujian** (jadwal jam ujian & istirahat, terpisah dari bel harian)
 - **Tarhim otomatis** menjelang waktu Subuh & Maghrib (jadwal diambil online dari API jadwal sholat, dengan fallback offline)
-- **Output audio HANYA lewat speaker Bluetooth** (mixer sekolah) — tidak ada fallback ke speaker lokal PC
+- **Output audio: Bluetooth ATAU Line Out (BARU V15)** — dipilih sekali lewat `atur_output_audio.sh`, tidak ada fallback otomatis antar keduanya (kalau mode aktif gagal, bel tidak bunyi sampai masalahnya diperbaiki atau mode diganti manual)
 - Watchdog, logging, backup config, dan monitoring kesehatan otomatis
+- **Disaster recovery otomatis** — kalau `/home` bersih total (mis. mati listrik berulang merusak filesystem), sistem mendeteksi & memulihkan diri sendiri dari GitHub (lihat bagian 7)
 
-Semua diatur lewat satu file: `sekolah.conf`, dan diinstal oleh satu script: `Installer-bel-v13.sh`.
+Semua diatur lewat satu file: `sekolah.conf`, dan diinstal oleh satu script: `Installer-bel-v15.sh`.
 
 ---
 
 ## 2. Prasyarat
 
 ### Hardware
-- PC/Laptop dengan adapter Bluetooth internal atau USB dongle Bluetooth
-- Speaker/mixer Bluetooth berprofil **A2DP** (mendukung streaming audio, bukan cuma headset call)
-- Koneksi internet (untuk jadwal sholat online & instalasi paket — sistem tetap bisa jalan offline dengan data jadwal sholat cache terakhir)
+Pilih salah satu (atau siapkan keduanya untuk fleksibilitas):
+- **Untuk mode Bluetooth:** adapter Bluetooth internal/USB dongle + speaker/mixer Bluetooth berprofil **A2DP** (mendukung streaming audio, bukan cuma headset call)
+- **Untuk mode Line Out:** jack audio analog on-board (kartu suara internal, mis. Intel HDA PCH) + kabel ke amplifier/mixer eksternal
+
+Ditambah:
+- Koneksi internet (untuk jadwal sholat online, instalasi paket, & disaster recovery — sistem tetap bisa jalan offline dengan data jadwal sholat cache terakhir)
 
 ### Software
 - **Debian 12/13** (sudah diuji, termasuk penamaan paket `polkitd` pengganti `policykit-1` di versi baru)
@@ -37,27 +43,27 @@ Semua diatur lewat satu file: `sekolah.conf`, dan diinstal oleh satu script: `In
 ### Paket yang otomatis diinstal oleh installer
 `bluez`, `bluez-tools`, `bluez-alsa-utils`, `alsa-utils`, `mpv`, `curl`, `jq`, `rfkill`, `nano`, `fail2ban`, `systemd-timesyncd`, `policykit-1`/`polkitd`
 
-> **Penting:** Installer otomatis **menonaktifkan PipeWire/PulseAudio/WirePlumber** kalau ada, karena mereka berebut akses adapter Bluetooth dengan BlueALSA. Sistem ini didesain full pakai **BlueALSA + ALSA murni**, bukan PipeWire.
+> **Penting:** Installer otomatis **menonaktifkan PipeWire/PulseAudio/WirePlumber** kalau ada, karena mereka berebut akses adapter Bluetooth dengan BlueALSA, dan juga berebut akses `/etc/asound.conf` dengan mekanisme routing dinamis V15. Sistem ini didesain full pakai **BlueALSA + ALSA murni**, bukan PipeWire — berlaku untuk mode Bluetooth maupun Line Out.
 
 ---
 
 ## 3. Persiapan Sebelum Instalasi
 
-### Langkah 1 — Pairing speaker secara manual (WAJIB dilakukan dulu sebelum atau sesaat setelah instalasi)
+### Langkah 1 — Tentukan mode output, lalu siapkan sesuai mode
 
-Cari tahu MAC address speaker Bluetooth yang akan dipakai:
-
+**Kalau pakai Bluetooth:** cari MAC address speaker:
 ```bash
 bluetoothctl scan on
 # Tunggu sampai nama speaker/mixer muncul, catat MAC-nya, misal:
 # 16:3E:E3:5F:EF:E5  BT-MAX
 ```
+Pastikan speaker dalam **mode pairing** (biasanya lampu indikator berkedip cepat) saat scan. Lihat [Bluetooth-Setup.md](Bluetooth-Setup.md) untuk panduan lengkap.
 
-Pastikan speaker dalam **mode pairing** (biasanya lampu indikator berkedip cepat) saat scan.
+**Kalau pakai Line Out:** tidak perlu langkah di atas sama sekali. Cukup pastikan kabel jack tersambung ke amplifier. `MAC_SPEAKER` di installer bisa diisi placeholder apa saja yang formatnya valid (`XX:XX:XX:XX:XX:XX`) kalau memang tidak akan pernah dipakai — atau isi MAC speaker cadangan kalau suatu saat ingin beralih ke Bluetooth juga.
 
 ### Langkah 2 — Edit variabel konfigurasi di awal script installer
 
-Buka `Installer-bel-v13.sh`, cari bagian **"1. KONFIGURASI SEKOLAH"** di awal file, dan sesuaikan:
+Buka `Installer-bel-v15.sh`, cari bagian **"1. KONFIGURASI SEKOLAH"** di awal file, dan sesuaikan:
 
 ```bash
 USER_SISTEM="lenovo"                   # Nama user non-root di Debian
@@ -86,32 +92,23 @@ Installer akan **memperingatkan di akhir instalasi** kalau ada file yang belum a
 ## 4. Proses Instalasi
 
 ```bash
-sudo chmod +x Installer-bel-v13.sh
-sudo ./Installer-bel-v13.sh
+sudo chmod +x Installer-bel-v15.sh
+sudo ./Installer-bel-v15.sh
 ```
 
-Installer akan berjalan otomatis lewat 9 tahap (apt update, konfigurasi Bluetooth/BlueALSA, kunci PCM ALSA ke MAC speaker, generate semua script & config, daftarkan systemd service, logrotate, crontab). Total durasi tergantung kecepatan `apt update && apt upgrade` (bisa beberapa menit).
+Installer akan berjalan otomatis lewat 9 tahap utama (apt update, konfigurasi Bluetooth/BlueALSA, generate semua script & config, daftarkan systemd service, logrotate, crontab, lalu **menerapkan routing ALSA awal** ke `/etc/asound.conf` di tahap terakhir). Total durasi tergantung kecepatan `apt update && apt upgrade` (bisa beberapa menit).
 
-Di akhir instalasi akan muncul ringkasan status:
+**Perbedaan penting dari versi lama:** tahap konfigurasi `/etc/asound.conf` **tidak lagi** terjadi di tengah instalasi (tahap lama "[4/9] Mengunci PCM ALSA") — sekarang dilakukan **di akhir** (tahap `[8d/9]`) lewat `atur_output_audio.sh bluetooth`, setelah semua skrip pendukung (`sambung_bt.sh`, dst.) sudah dibuat.
 
-```
-====================================================
- INSTALASI SELESAI - <Nama Sekolah>
-====================================================
- Service aktif   : tahrim-daemon.service (nonstop), bt-boot-connect.service (oneshot saat boot)
- ...
- STATUS BLUETOOTH SPEAKER (16:3E:E3:5F:EF:E5)
-   Sudah Paired  : YA/TIDAK
-   Sudah Connect : YA/TIDAK
+Di akhir instalasi akan muncul ringkasan status, termasuk mode output audio yang aktif. Kalau tahap `[8d/9]` gagal (misalnya speaker belum di-pair), installer **tidak berhenti** — hanya memberi peringatan, dan Anda tinggal jalankan manual setelah speaker siap:
+```bash
+sudo /home/lenovo/atur_output_audio.sh bluetooth
 ```
 
-Kalau status **Paired: TIDAK**, jalankan pairing manual:
-
+Kalau status Bluetooth **Paired: TIDAK**, jalankan pairing manual:
 ```bash
 sudo /home/<user>/pasang_bt.sh
 ```
-
-(Pastikan speaker dalam mode pairing saat menjalankan ini.)
 
 ---
 
@@ -120,22 +117,29 @@ sudo /home/<user>/pasang_bt.sh
 Jangan langsung anggap selesai — jalankan checklist ini dulu:
 
 ```bash
-# 1. Bluetooth benar-benar paired & connected
+# 1. Kalau mode Bluetooth: benar-benar paired & connected
 bluetoothctl info <MAC_SPEAKER> | grep -E "Paired|Trusted|Connected|Name"
 
-# 2. Konfigurasi ALSA benar (harus cuma 2 baris "defaults.bluealsa...")
+# 2. Konfigurasi ALSA benar -- FORMAT BERUBAH DI V15, JANGAN cari 2 baris
+#    "defaults.bluealsa..." seperti dokumentasi versi lama. Sekarang
+#    harus ada blok "pcm.!default { ... }" yang mengarah ke bluealsa
+#    (mode bluetooth) atau dmix (mode line_out). Cek juga cocok dengan
+#    mode yang diinginkan:
 cat /etc/asound.conf
+/home/<user>/atur_output_audio.sh status
 
 # 3. Config utama benar
 cat /home/<user>/sekolah.conf
 
 # 4. Service aktif & sehat
 systemctl status tahrim-daemon.service --no-pager
-systemctl status bt-boot-connect.service --no-pager   # wajar kalau "inactive (dead)" setelah sukses jalan sekali
-systemctl status bluealsa.service --no-pager
-systemctl status bluetooth.service --no-pager
+systemctl status bt-boot-connect.service --no-pager   # wajar "inactive (dead)" setelah sukses jalan sekali
+systemctl status integritas-sistem.timer --no-pager
+systemctl status bluealsa.service --no-pager           # relevan kalau mode bluetooth
+systemctl status bluetooth.service --no-pager          # relevan kalau mode bluetooth
 
-# 5. TEST PALING PENTING: playback manual, dengarkan langsung dari speaker
+# 5. TEST PALING PENTING: playback manual, dengarkan langsung dari speaker/amplifier
+/home/<user>/atur_output_audio.sh test
 /home/<user>/putar_audio.sh test "Test Instalasi" /home/<user>/audio/<salah-satu-file>.mp3
 tail -20 /var/log/otomasi_audio.log
 
@@ -147,13 +151,18 @@ sleep 3
 # 7. Cron aktif
 crontab -l -u <user>
 
-# 8. TEST REBOOT PENUH — paling penting untuk memastikan
-#    bt-boot-connect.service benar-benar reconnect otomatis
+# 8. TEST SWITCHING OUTPUT (BARU V15) -- pastikan pindah dua arah lancar
+sudo /home/<user>/atur_output_audio.sh line_out
+sudo /home/<user>/atur_output_audio.sh bluetooth
+
+# 9. TEST REBOOT PENUH -- paling penting untuk memastikan bt-boot-connect.service
+#    (kalau mode bluetooth) benar-benar reconnect otomatis, DAN /etc/asound.conf
+#    tetap konsisten dengan AUDIO_OUTPUT di sekolah.conf setelah reboot
 sudo reboot
-# setelah nyala lagi, tunggu ~1 menit, ulangi langkah 1 & 5 tanpa
+# setelah nyala lagi, tunggu ~1 menit, ulangi langkah 1, 2, dan 5 tanpa
 # melakukan apapun manual
 
-# 9. Disk & log tidak membengkak
+# 10. Disk & log tidak membengkak
 df -h /home
 du -sh /var/log/otomasi_audio.log
 ```
@@ -162,43 +171,65 @@ Kalau semua lolos, sistem siap dipakai produksi harian.
 
 ---
 
-## 6. Peta Semua Script (letaknya di `/home/<user>/`)
+## 6. Peta Semua Script
+
+### Di `/home/<user>/` (dibuat oleh installer, ikut backup harian)
 
 | Script | Dipanggil oleh | Fungsi |
 |---|---|---|
-| `sekolah.conf` | semua script lain (di-`source`) | Konfigurasi pusat: nama sekolah, koordinat, MAC speaker, path |
+| `sekolah.conf` | semua script lain (di-`source`) | Konfigurasi pusat: nama sekolah, koordinat, MAC speaker, path, mode output audio |
 | `jadwal_harian.conf` | `cek_harian.sh` | Jadwal bel harian (lagu pagi, Indonesia Raya, bel dzuhur, dst) |
 | `jadwal_ujian.conf` | `cek_ujian.sh` | Jadwal bel & istirahat masa ujian |
+| `atur_output_audio.sh` | **Manual oleh admin** (auto-elevate sudo) | **(BARU V15)** Ganti output Bluetooth ↔ Line Out, tulis ulang `/etc/asound.conf`, tes bunyi otomatis |
 | `pasang_bt.sh` | **Manual oleh admin** | Pairing ULANG dari nol (scan→pair→trust→connect). Dipakai kalau speaker direset/diganti/ada masalah pairing |
-| `sambung_bt.sh` | `putar_audio.sh`, otomatis | Cek cepat status koneksi, reconnect ringan (3x percobaan) kalau putus, sebelum tiap bel diputar |
-| `putar_audio.sh` | `cek_harian.sh`, `cek_ujian.sh`, `tahrim_daemon.sh` | Eksekusi aktual pemutaran audio lewat `mpv`, dengan lock file anti-tabrakan |
+| `sambung_bt.sh` | `putar_audio.sh`, otomatis | Cek cepat status koneksi, reconnect ringan (3x percobaan) kalau putus, sebelum tiap bel diputar (hanya relevan mode bluetooth) |
+| `putar_audio.sh` | `cek_harian.sh`, `cek_ujian.sh`, `tahrim_daemon.sh` | Eksekusi aktual pemutaran audio lewat `mpv` ke `alsa/default` (routing ditentukan `/etc/asound.conf`), dengan lock file anti-tabrakan |
 | `cek_harian.sh` | **cron, tiap menit** | Cek jadwal `jadwal_harian.conf`, panggil `putar_audio.sh` kalau waktunya pas |
 | `cek_ujian.sh` | **cron, tiap menit** | Sama seperti di atas tapi untuk `jadwal_ujian.conf` |
 | `kelola_harian.sh` | Manual oleh admin | Tambah/ubah/lihat jadwal bel harian (CLI interaktif) |
 | `kelola_ujian.sh` | Manual oleh admin | Tambah/ubah/lihat jadwal bel ujian |
 | `mode_sekolah.sh` | Manual oleh admin | Aktifkan/nonaktifkan mode: hari biasa / masa ujian / liburan, per fitur bel |
+| `lanjutkan_bel_senin.sh` | Manual oleh admin | Melanjutkan bel jam pelajaran Senin setelah upacara selesai (lihat 8.6) |
 | `tahrim_daemon.sh` | systemd (`tahrim-daemon.service`, nonstop) | Ambil jadwal sholat online (API Aladhan), putar tarhim 20 menit sebelum Subuh/Maghrib |
-| `cek_disk.sh` | **cron, tiap 5 menit** | Peringatan kalau disk > 85% penuh |
+| `cek_disk.sh` | **cron, tiap hari 07:00** | Peringatan kalau disk > 85% penuh |
 | `cek_service.sh` | **cron, tiap 5 menit** | Watchdog: restart `tahrim-daemon.service` kalau mati |
-| `cek_kesehatan.sh` | Manual oleh admin | Ringkasan status sistem sekali lihat (service, Bluetooth, disk, NTP) |
+| `cek_kesehatan.sh` | Manual oleh admin | Ringkasan status sistem sekali lihat (service, Bluetooth, disk, NTP, mode output audio, status pause Senin) |
 | `alert_gagal.sh` | systemd `OnFailure=` | Catat log CRITICAL kalau service gagal berulang (bukan reconnect biasa) |
-| `backup.sh` | **cron, tiap hari 23:55** | Backup semua `.sh`/`.conf` ke `~/backup/`, simpan 14 hari terakhir |
+| `backup.sh` | **cron, tiap hari 23:55** | Backup semua `.sh`/`.conf` ke `~/backup/` (14 hari) + salin config ke `/var/backups/audio-school-system` (luar `/home`, untuk disaster recovery) |
+
+### Di luar `/home` (sengaja, supaya tidak ikut hilang kalau `/home` wipe total)
+
+| Script/File | Lokasi | Fungsi |
+|---|---|---|
+| `cek_integritas_sistem.sh` | `/usr/local/bin/` | Deteksi kalau `/home` wipe total (≥70% file kunci hilang), auto-clone ulang repo GitHub + install + pulihkan config/audio dari backup |
+| `recovery.conf` | `/etc/audio-school-system/` | Konfigurasi minimal untuk `cek_integritas_sistem.sh` (berisi `USER_SISTEM`) |
+| Backup config | `/var/backups/audio-school-system/` | Salinan `sekolah.conf`, `jadwal_harian.conf`, `jadwal_ujian.conf` di luar `/home` |
+
+### Skrip terpisah di repo (bukan hasil generate installer)
+
+| Script | Lokasi | Fungsi |
+|---|---|---|
+| `Installer-bel-v15.sh` | `scripts/` | Installer utama untuk instalasi baru |
+| `terapkan_perbaikan_switching_v15.sh` | `scripts/` | Patch mekanisme switching output audio V15c ke server yang **sudah berjalan** (versi lama), tanpa install ulang total |
+
+---
 
 ## 7. Systemd Service & Cron
 
 | Nama | Tipe | Fungsi |
 |---|---|---|
-| `bt-boot-connect.service` | `oneshot`, jalan sekali saat boot | Reconnect otomatis ke speaker setelah mati listrik/reboot |
+| `bt-boot-connect.service` | `oneshot`, jalan sekali saat boot | Reconnect otomatis ke speaker Bluetooth setelah mati listrik/reboot (hanya relevan mode bluetooth, tapi tetap aktif meski sedang mode line_out — tidak mengganggu) |
 | `tahrim-daemon.service` | `simple`, nonstop | Jalankan `tahrim_daemon.sh` terus-menerus |
-| `otomasi-audio-alert@.service` | `oneshot`, dipicu `OnFailure=` | Kirim log CRITICAL saat service utama gagal total |
+| `integritas-sistem.service` + `.timer` | `oneshot` + timer (tiap 15 menit + saat boot) | Cek & pulihkan otomatis kalau `/home` wipe total |
+| `otomasi-audio-alert@.service` | `oneshot`, dipicu `OnFailure=` | Kirim log CRITICAL saat `bt-boot-connect.service`/`tahrim-daemon.service` gagal total |
 
-> **Catatan V14:** Versi sebelumnya (V13 ke bawah) punya `anti-putus.service` yang jalan 24 jam nonstop mengirim audio kosong (silent keep-alive) ke speaker supaya koneksi tidak terputus. Ini **dihapus** di V14 karena terbukti tidak diperlukan (speaker BT-MAX tetap reconnect otomatis dengan baik tanpa itu) dan justru jadi sumber bug `Device or resource busy` karena berebut akses PCM dengan `mpv`. Reconnect sekarang cukup ditangani `bt-boot-connect.service` (sekali saat boot) + `sambung_bt.sh` (on-demand sebelum tiap bel).
+> **Catatan V14:** Versi sebelumnya (V13 ke bawah) punya `anti-putus.service` yang jalan 24 jam nonstop mengirim audio kosong (silent keep-alive) ke speaker supaya koneksi tidak terputus. Ini **dihapus** di V14 karena terbukti tidak diperlukan dan justru jadi sumber bug `Device or resource busy` karena berebut akses PCM dengan `mpv`. Reconnect sekarang cukup ditangani `bt-boot-connect.service` (sekali saat boot) + `sambung_bt.sh` (on-demand sebelum tiap bel).
 
 Cron (`crontab -l -u <user>`):
 ```
 * * * * * /home/<user>/cek_harian.sh
 * * * * * /home/<user>/cek_ujian.sh
-*/5 * * * * /home/<user>/cek_disk.sh
+0 7 * * * /home/<user>/cek_disk.sh
 */5 * * * * /home/<user>/cek_service.sh
 55 23 * * * /home/<user>/backup.sh
 ```
@@ -371,10 +402,60 @@ $DIR/kelola_harian.sh tambah 07:15 2-4,6 bel_contoh2_0715 0017.mp3
 - Perhatikan baris yang polanya **beda sendiri** dari baris-baris di sekitarnya (kemungkinan besar itu bukan salah baca — potensi pengecualian yang memang disengaja, tapi tetap perlu dikonfirmasi ke yang paling paham jadwal sekolahnya).
 - Kalau ragu, lebih baik tanya dulu daripada menjalankan langsung ke server produksi.
 
-**Ganti speaker Bluetooth (kalau beli speaker baru / MAC berubah):**
+### 8.5 Mengatur/Mengganti Output Audio: Bluetooth ↔ Line Out (BARU V15)
+
+```bash
+# Pindah ke speaker Bluetooth
+sudo /home/<user>/atur_output_audio.sh bluetooth
+
+# Pindah ke jack analog (auto-deteksi kartu suara lewat nama kartu)
+sudo /home/<user>/atur_output_audio.sh line_out
+
+# Kalau ada lebih dari satu kartu suara non-HDMI, sebutkan manual
+# (lihat nama kartu lewat `aplay -l`, kolom setelah "card N:"):
+sudo /home/<user>/atur_output_audio.sh line_out PCH
+
+# Lihat mode aktif + isi /etc/asound.conf saat ini
+/home/<user>/atur_output_audio.sh status
+
+# Tes bunyi cepat lewat output yang sedang aktif (mode apapun)
+/home/<user>/atur_output_audio.sh test
+```
+
+**Apa yang terjadi di balik layar saat switching:**
+1. `/etc/asound.conf` ditulis ulang — `pcm.!default` diarahkan ke `bluealsa` (terkunci ke `MAC_SPEAKER`) atau `dmix` (di atas kartu analog yang terdeteksi)
+2. Pindah ke `line_out`: Bluetooth yang sedang terhubung otomatis diputus, lalu semua kontrol mixer **playback** yang benar-benar ada di hardware (hasil `amixer scontrols`, mengecualikan `Capture`) di-unmute & di-set 100%
+3. Pindah ke `bluetooth`: otomatis mencoba sambung ulang ke speaker
+4. Kalau ada bel yang **sedang diputar** saat perintah switch dijalankan, sistem menunggu maksimal 12 detik sampai bel itu selesai sebelum benar-benar switching (supaya tidak memutus bel di tengah jalan); kalau bel-nya panjang dan belum selesai dalam 12 detik, switching tetap dilanjutkan dengan peringatan di log
+5. Tes bunyi otomatis dijalankan di akhir, hasilnya langsung terlihat di terminal
+
+**Auto-elevate:** skrip ini otomatis memicu `sudo` sendiri kalau dijalankan tanpa `sudo` (karena menulis `/etc/asound.conf` butuh root), dan sudah didaftarkan NOPASSWD khusus untuk skrip ini di sudoers — lihat [SECURITY.md](../SECURITY.md) untuk trade-off keamanannya.
+
+**Menerapkan perbaikan V15c ke server yang masih pakai versi lama** (tanpa install ulang total):
+```bash
+cd /opt/audio-school/scripts
+sudo bash terapkan_perbaikan_switching_v15.sh
+```
+
+### 8.6 Bel Senin (Upacara)
+
+Bel jam pelajaran hari Senin (kunci berpola `jam_ke_*_senin`, kalau dikonfigurasi) otomatis **di-pause** setelah bel masuk, menunggu upacara selesai (durasi upacara beda-beda tiap minggu, tidak dijadwalkan otomatis pakai jam tetap):
+
+```bash
+# Setelah upacara selesai:
+/home/<user>/lanjutkan_bel_senin.sh
+```
+
+Ada safety-valve: kalau admin lupa menjalankan ini, pause **otomatis batal sendiri setelah 90 menit** — bel jam pelajaran Senin tidak akan diam sepanjang hari kalau lupa. Cek status pause kapan saja lewat `cek_kesehatan.sh` (bagian "STATUS BEL SENIN").
+
+### 8.7 Ganti Speaker Bluetooth (Kalau Beli Speaker Baru / MAC Berubah)
+
 1. Edit `MAC_SPEAKER` di `/home/<user>/sekolah.conf`
-2. Edit juga `defaults.bluealsa.device` di `/etc/asound.conf` — samakan dengan MAC baru
-3. Pairing speaker baru: `sudo /home/<user>/pasang_bt.sh`
+2. Pairing speaker baru: `sudo /home/<user>/pasang_bt.sh`
+3. **Terapkan ke routing ALSA** (BARU V15 — cukup satu perintah, tidak perlu lagi edit `/etc/asound.conf` manual seperti versi lama):
+   ```bash
+   sudo /home/<user>/atur_output_audio.sh bluetooth
+   ```
 4. Hapus pairing speaker lama (opsional, kalau tidak dipakai lagi): `bluetoothctl remove <MAC_LAMA>`
 
 ---
@@ -383,14 +464,16 @@ $DIR/kelola_harian.sh tambah 07:15 2-4,6 bel_contoh2_0715 0017.mp3
 
 | Gejala | Penyebab Paling Umum | Solusi |
 |---|---|---|
-| `mpv` error `Unknown field slave` | `/etc/asound.conf` berisi definisi `pcm.bluealsa` mentah yang bentrok dengan template resmi paket `bluez-alsa` | Pastikan `/etc/asound.conf` **hanya** berisi `defaults.bluealsa.device` & `defaults.bluealsa.profile`, jangan definisikan ulang `pcm.bluealsa`/`ctl.bluealsa` |
-| `mpv` error `Device or resource busy` | Ada proses lain (mis. `aplay -D bluealsa`) sedang memegang PCM yang sama | `pkill -f "aplay -q -D bluealsa"` sebelum play (sudah otomatis ditangani `putar_audio.sh`) |
-| `mpv` Fatal Error, `option not found` | Opsi command-line mpv yang salah/tidak ada (mis. `--audio-fallback-to-ids` yang memang bukan opsi valid) | Cek `mpv --list-options`, samakan nama opsi yang benar |
-| Audio keluar dari speaker PC, bukan Bluetooth | PipeWire/PulseAudio masih aktif dan mengambil alih routing | Pastikan PipeWire/PulseAudio/WirePlumber dinonaktifkan (installer sudah menangani ini otomatis) |
+| Mode `line_out` tidak bunyi, `hw:...` device error | (V15c, sudah diperbaiki) versi lama bisa salah ambil nama panjang kartu berspasi | Pastikan pakai `atur_output_audio.sh` versi V15c terbaru; cek `cat /etc/asound.conf` — ID kartu di `pcm "hw:XXX,0"` harus **tanpa spasi** |
+| `atur_output_audio.sh` tidak mendeteksi kartu analog sama sekali | Fitur `awk` versi lama tidak portable di `mawk` (default Debian minimal) | Sudah diperbaiki di V15c (pakai `awk` POSIX biasa); pastikan skrip yang terpasang adalah versi terbaru |
+| `mpv` error `Device or resource busy` | Ada proses lain (mis. `aplay -D bluealsa`) sedang memegang PCM yang sama | `pkill -f "aplay -q -D bluealsa"` sebelum play (sudah otomatis ditangani `putar_audio.sh`); mode `line_out` juga sudah pakai `dmix` untuk mencegah ini |
+| `mpv` Fatal Error, `option not found` | Opsi command-line mpv yang salah/tidak ada (mis. `--audio-fallback-to-ids` yang memang bukan opsi valid) | Cek `mpv --list-options`, samakan nama opsi yang benar (sudah dihapus dari kode sejak V14) |
+| Audio keluar dari speaker PC internal, bukan speaker/amplifier yang dimaksud | PipeWire/PulseAudio masih aktif dan mengambil alih routing, ATAU mode output aktif tidak sesuai hardware yang tersambung | Pastikan PipeWire/PulseAudio/WirePlumber dinonaktifkan (installer sudah menangani ini otomatis); cek `atur_output_audio.sh status` cocok dengan hardware yang tersambung |
 | Bluetooth gagal connect: `br-connection-page-timeout` | Speaker mati / di luar jangkauan / sedang connect ke device lain | Cek fisik speaker dulu (nyala, dekat, tidak dipakai device lain) sebelum curiga ke software |
 | Bluetooth gagal connect: `br-connection-busy` | Dua proses `bluetoothctl` mencoba connect bersamaan (mis. `pasang_bt.sh` manual + `sambung_bt.sh` otomatis di waktu bersamaan) | Sudah dicegah lewat lock file bersama `/tmp/bt_op.lock` di `sambung_bt.sh` & `pasang_bt.sh` |
 | Log menunjukkan percobaan reconnect ke MAC yang salah/lama | MAC lama masih tersimpan sebagai trusted device di database Bluetooth, atau ada script/proses lama yang belum diperbarui | `bluetoothctl remove <MAC_lama>`; cek juga proses "hantu" yang masih jalan dari script versi lama: `sudo lsof +L1 \| grep sh` |
 | `hci0 error` di layar / dmesg | Masalah driver/hardware adapter Bluetooth | `dmesg \| grep -i hci0`, coba `sudo rfkill unblock bluetooth && sudo systemctl restart bluetooth` |
+| Amixer `sset <nama>` gagal, "Unable to find simple control" | Nama kontrol mixer yang dipakai (`Speaker`/`Headphone`/`Front`/dst.) tidak ada di hardware Anda | Cek dulu kontrol yang **benar-benar ada**: `amixer scontrols` (di Lenovo S200z hanya ada `Master` & `Capture`); `atur_output_audio.sh` versi V15c sudah otomatis query ini, tidak menebak lagi |
 
 ---
 
@@ -398,8 +481,10 @@ $DIR/kelola_harian.sh tambah 07:15 2-4,6 bel_contoh2_0715 0017.mp3
 
 - File `sekolah.conf` menyimpan MAC address speaker dalam bentuk plain text — bukan data sensitif secara keamanan (bukan password), aman disimpan begitu.
 - `alert_gagal.sh` dan seluruh log ditulis ke `/var/log/otomasi_audio.log`, dirotasi otomatis tiap hari (disimpan 7 hari, `logrotate`).
-- Backup config otomatis harian ke `~/backup/`, disimpan 14 hari terakhir.
+- Backup config otomatis harian ke `~/backup/` (14 hari) dan `/var/backups/audio-school-system` (di luar `/home`, untuk disaster recovery).
+- **(BARU V15)** `atur_output_audio.sh` punya akses `sudo` NOPASSWD walau berada di `/home` (writable oleh user biasa) — ini trade-off keamanan yang disengaja demi kenyamanan operasional. Lihat [SECURITY.md](../SECURITY.md) bagian "Trade-off Keamanan yang Disengaja" untuk detail lengkap & opsi pengerasan kalau diperlukan.
+- **(sudah ada sejak sebelum V15, tapi baru terdokumentasi di sini)** `cek_integritas_sistem.sh` (disaster recovery) bisa mengunduh & mengeksekusi installer dari GitHub sebagai root secara otomatis tanpa campur tangan manusia kalau `/home` terdeteksi wipe total — lihat [SECURITY.md](../SECURITY.md) bagian "Disaster Recovery" untuk implikasinya.
 
 ---
 
-*Dokumen ini dibuat berdasarkan pengalaman instalasi & debugging nyata sistem Installer-bel-v13 (revisi V14). Kalau menemukan skenario baru yang belum tercakup di sini, sebaiknya ditambahkan supaya panduan ini terus relevan untuk instalasi berikutnya.*
+*Dokumen ini dibuat berdasarkan pengalaman instalasi & debugging nyata sistem, termasuk audit ulang mekanisme switching output audio V15/V15c yang divalidasi dengan simulasi end-to-end memakai data hardware nyata. Kalau menemukan skenario baru yang belum tercakup di sini, sebaiknya ditambahkan supaya panduan ini terus relevan untuk instalasi berikutnya.*
